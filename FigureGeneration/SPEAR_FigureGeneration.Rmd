@@ -1,0 +1,2383 @@
+---
+title: "SPEAR Figure Generator"
+output: html_notebook
+---
+
+#### Overview:
+
+This script is used to generate all figures for the SPEAR manuscript. Figures have been separated by section:
+
+#### Libraries:
+
+```{r echo = FALSE, message = FALSE}
+library(SPEAR)
+
+# Other packages:
+library(tidyverse)
+library(pROC)
+library(gg3D)
+library(ggpubr)
+library(clusterProfiler)
+library(enrichplot)
+library(msigdbr)
+library(org.Hs.eg.db)
+organism = org.Hs.eg.db
+```
+
+#### Color Parameters:
+
+```{r}
+# Colors
+SPEAR_COLOR <- "#CD71FC"
+SPEAR_MIN_COLOR <- "#E4B8FA"
+MOFA_COLOR <- "#ADFC7C"
+LASSO_COLOR <- "#FFB54A"
+DIABLO_COLOR <- "#65B7FC"
+SET_A_COLORS <- c("#E41A1C", "#377EB8", "#4DAF4A", "#984EA3", "#FF7F00") # length of 5
+MULTI_COLORS <- c("red", "blue", "green", "cyan", "orange", "purple", "grey", "white", "black") # length of 9
+SEVERITY_COLORS <- c("#5FA05E", "gold", "#FF8A00", "#E72C3C") 
+ORDINAL_COLORS <- viridis::inferno(7, begin = .25)
+```
+
+## Figure 1: SPEAR Overview
+
+(No applicable code)
+
+## Figure 2: Gaussian Simulation
+
+Read results files, prepare for plotting:
+```{r}
+all.rds.files <- sort(list.files(path = "Figure2", pattern = c(".rds")))
+all.rds.files <- all.rds.files[grepl("factors.rds", all.rds.files)]
+all.res <- list()
+for(i in 1:length(all.rds.files)){
+  tmp.res <- list()
+  file = all.rds.files[i]
+  tmp <- readRDS(file = paste0("Figure2/", file))
+  for(it in 1:length(tmp)){
+    tmp[[it]]$errors$iteration <- it
+    tmp[[it]]$errors$Model <- rownames(tmp[[it]]$errors)
+    rownames(tmp[[it]]$errors) <- NULL
+  }
+  error.df <- do.call("rbind", lapply(tmp, function(t){return(t$errors)}))
+  rownames(error.df) <- NULL
+  error.df <- dplyr::select(error.df, iteration, Model, dplyr::everything())
+  
+  tmp.res$all <- error.df
+  
+  # Get mean per iteration:
+  mean.mat <- as.matrix(tmp[[1]]$errors[1:3])
+  for(ii in 1:nrow(mean.mat)){
+    for(jj in 1:ncol(mean.mat)){
+      mean.mat[ii,jj] <- mean(sapply(tmp, function(df){return(as.numeric(df$errors[ii,jj]))}), na.rm = TRUE)
+    }
+  }
+  mean.df <- tmp[[1]]$errors
+  mean.df$iteration <- "all"
+  mean.df$train <- as.numeric(mean.mat[,1])
+  mean.df$cv <- as.numeric(mean.mat[,2])
+  mean.df$test <- as.numeric(mean.mat[,3])
+  tmp.res$mean <- mean.df
+  sd.mat <- as.matrix(tmp[[1]]$errors[1:3])
+  for(ii in 1:nrow(sd.mat)){
+    for(jj in 1:ncol(sd.mat)){
+      sd.mat[ii,jj] <- sd(sapply(tmp, function(df){return(as.numeric(df$errors[ii,jj]))}), na.rm = TRUE)
+    }
+  }
+  sd.df <- tmp[[1]]$errors
+  sd.df$iteration <- "all"
+  sd.df$train <- as.numeric(sd.mat[,1])
+  sd.df$cv <- as.numeric(sd.mat[,2])
+  sd.df$test <- as.numeric(sd.mat[,3])
+  tmp.res$sd <- sd.df
+  
+  tmp.res$corr <- lapply(tmp, function(iter){
+    return(iter$correlations)
+  })
+  all.res[[gsub(".rds", "", file)]] <- tmp.res
+}
+```
+
+2A) Prediction performance for low-med-high signals:
+
+```{r}
+file.names <- c("c0.5_specificfactors", "c1_specificfactors", "c3_specificfactors")
+file.labels <- c("Low Signal", "Moderate Signal", "High Signal")
+df.total <- data.frame()
+for(file.idx in 1:length(file.names)){
+  file.name <- file.names[file.idx]
+  cur.lab <- file.labels[file.idx]
+  
+  labs <- c("MOFA", paste0("w = ", c(1, .5, 0)), "Lasso")
+  lvls <- c("MOFA", "SPEAR_widx2", "SPEAR_widx3", "SPEAR_widx6", "lasso")
+  
+  tmp <- all.res[[file.name]]
+  tmp$all$train <- as.numeric(tmp$all$train)
+  tmp$all$cv <- as.numeric(tmp$all$cv)
+  tmp$all$test <- as.numeric(tmp$all$test)
+  tmp$all$Group <- sapply(tmp$all$Model, function(m){if(grepl("SPEAR", m)){return("SPEAR")}else{return(m)}})
+  df.melt <- reshape2::melt(tmp$all, id.vars = c("iteration", "Model", "w.idx", "Group"))
+  
+  # Filter to only MOFA, w.idx2, w.idx3, w.idx6, lasso:
+  df.melt <- dplyr::filter(df.melt, Model == "SPEAR_widx2" | Model == "SPEAR_widx3"| Model == "SPEAR_widx6" | Model == "MOFA" | Model == "lasso", variable == "test")
+  df.melt$variable = cur.lab
+  df.total <- rbind(df.total, df.melt)
+}
+df.total$variable <- factor(df.total$variable, levels = file.labels)
+
+fig2A <- ggplot() +
+  geom_hline(yintercept = c(1, .8, .6), size = .15, color = "grey60") +
+  geom_hline(yintercept = seq(.5, 1.15, .05), size = .07, color = "grey80") +
+  geom_line(data = df.total, aes(x = factor(Model, levels = lvls), y = value, group = iteration), shape = 21, width = .05, color = 'grey70', size = .5) +
+  geom_line(data = dplyr::filter(df.total, iteration == 1, variable == "Moderate Signal"), aes(x = factor(Model, levels = lvls), y = value, group = iteration), shape = 21, width = .05, color = 'red', size = 1.3) +
+  geom_boxplot(data = df.total, aes(x = factor(Model, levels = lvls), y = value), fill = NA) +
+  geom_jitter(data = df.total, aes(x = factor(Model, levels = lvls), y = value, fill = Group), shape = 21, width = 0, size = 2) +
+  scale_x_discrete(labels = labs) +
+  scale_y_continuous(breaks = c(.6, .8, 1)) +
+  facet_grid(cols = vars(variable)) +
+  scale_fill_manual(values = c(LASSO_COLOR, MOFA_COLOR, SPEAR_COLOR)) +
+  theme_classic() +
+  xlab(NULL) +
+  guides(fill = "none") +
+  ylab("Test MSE") +
+  theme(axis.text.x = element_text(angle = 315, hjust = 0, size = 10),
+        plot.title = element_text(size = 16, hjust = .5),
+        strip.background = element_rect(fill = "white", size = 0),
+        panel.background = element_rect(fill = NULL, color = "black", size = 1),
+        strip.text = element_text(size = 12))
+fig2A
+#ggsave("GausSimPred_plot.png", g.errors, width = 6, height = 3)
+```
+
+2B) Corr. FS vs. Y:
+
+```{r}
+fs.melt <- readRDS("Figure2/Fig1C_FactorScoresData.rds")
+fs.melt$which.factor <- factor(fs.melt$which.factor, levels = c(levels(fs.melt$which.factor), "Mix"))
+fs.melt$which.factor[which(fs.melt$model == "SPEAR\nw.x = 0" & fs.melt$variable == "Factor1")] <- "Mix"
+col.vec <- c(
+            SET_A_COLORS[1:2], "grey50", "grey50", "grey50",
+            "grey", SET_A_COLORS[4]
+            )
+names(col.vec) <- c(paste0("Factor", 1:5), "None", "Mix")
+
+rect.df.total <- data.frame()
+for(i in 1:5){
+  mod <- c("True\nFactors", "MOFA", "SPEAR\nw.x = 1", "SPEAR\nw.x = 0.5", "SPEAR\nw.x = 0")[i]
+  for(j in 1:5){
+    flag = FALSE
+    var = paste0("Factor", j)
+    which.f = var
+    
+    # Modify:
+    if(mod == "MOFA" && var %in% paste0("Factor", c(1, 2, 4))){
+      flag = TRUE
+    }
+    if(mod == "SPEAR\nw.x = 0" & var != "Factor1"){
+      flag = TRUE
+    }
+    if(mod == "SPEAR\nw.x = 0" & var == "Factor1"){
+      which.f = "Mix"
+    }
+    
+    if(!flag){
+      pen.x = c(.2, .2, 1, 1, 1)[i]
+      pen.y = c(.1, .1, .1, .1, .1)[j]
+      rect.df <- data.frame(
+        xmin = min(dplyr::filter(fs.melt, variable == var)$Y1)-pen.y,
+        xmax = max(dplyr::filter(fs.melt, variable == var)$Y1)+pen.y,
+        ymin = min(dplyr::filter(fs.melt, model == mod)$value)-pen.x,
+        ymax = max(dplyr::filter(fs.melt, model == mod)$value)+pen.x,
+        variable = var,
+        model = mod,
+        which.factor = which.f
+      )
+      rect.df.total <- rbind(rect.df.total, rect.df)
+    }
+  }
+}
+
+# Plot factor scores
+# train:
+
+fig2B.tr <- ggplot2::ggplot(dplyr::filter(fs.melt, train_test == "train")) +
+    ggplot2::geom_point(ggplot2::aes(x = Y1, y = value, fill = which.factor), shape = 21, stroke = .1) +
+    #viridis::scale_fill_viridis(option = "C", direction = -1, end = .95) + # fill = Y1
+    ggplot2::scale_fill_manual(values = col.vec) + # fill = which.factor
+    ggplot2::labs(fill = "True") +
+    ggplot2::geom_smooth(ggplot2::aes(x = Y1, y = value), formula = y ~ x, method = "lm", color = "black", lwd = .5, fullrange = TRUE, alpha = 0) +
+    ggplot2::geom_rect(data = rect.df.total, aes(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax, color = which.factor), size = 1, fill = NA) +
+    ggplot2::scale_color_manual(values = col.vec) + # fill = which.factor  
+    ggplot2::theme_classic() +
+    scale_x_continuous(breaks = 0, labels = c("TRUE F1")) +
+    xlab(NULL) +
+    ylab("Factor Score") +
+    ggplot2::guides(fill = "none", color = "none") +
+    ggplot2::theme(plot.title = ggplot2::element_text(hjust = .5, size = 10),
+                 legend.title = ggplot2::element_text(size = 10),
+                 strip.background = element_rect(color = "white", fill = "white"),
+                 strip.text = element_text(size = 10),
+                 panel.background = element_blank(),
+                 panel.spacing = unit(0, "lines"),
+                 axis.line = element_blank(),
+                 axis.text.y = element_blank(),
+                 axis.text.x = element_text(angle = 90, hjust = 1, vjust = .5, size = 8, color = "white"),
+                 axis.ticks = element_blank()) +
+    facet_grid(cols = vars(variable), rows = vars(factor(model, levels = c("True\nFactors", "MOFA", "SPEAR\nw.x = 1", "SPEAR\nw.x = 0.5", "SPEAR\nw.x = 0"))), scales = "free_y")
+
+# test:
+fig2B.te <- ggplot2::ggplot(dplyr::filter(fs.melt, train_test == "test")) +
+    ggplot2::geom_point(ggplot2::aes(x = Y1, y = value, fill = which.factor), shape = 21, stroke = .1) +
+    #viridis::scale_fill_viridis(option = "C", direction = -1, end = .95) + # fill = Y1
+    ggplot2::scale_fill_manual(values = col.vec) + # fill = which.factor
+    ggplot2::labs(fill = "True") +
+    ggplot2::geom_smooth(ggplot2::aes(x = Y1, y = value), formula = y ~ x, method = "lm", color = "black", lwd = .5, fullrange = TRUE, alpha = 0) +
+    ggplot2::geom_rect(data = rect.df.total, aes(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax, color = which.factor), size = 1, fill = NA) +
+    ggplot2::scale_color_manual(values = col.vec) + # fill = which.factor  
+    ggplot2::theme_classic() +
+    scale_x_continuous(breaks = 0, labels = c("TRUE F1")) +
+    xlab(NULL) +
+    ylab("Factor Score") +
+    ggplot2::guides(fill = "none", color = "none") +
+    ggplot2::theme(plot.title = ggplot2::element_text(hjust = .5, size = 10),
+                 legend.title = ggplot2::element_text(size = 10),
+                 strip.background = element_rect(color = "white", fill = "white"),
+                 strip.text = element_text(size = 10),
+                 panel.background = element_blank(),
+                 panel.spacing = unit(0, "lines"),
+                 axis.line = element_blank(),
+                 axis.text.y = element_blank(),
+                 axis.text.x = element_text(angle = 90, hjust = 1, vjust = .5, size = 8, color = "white"),
+                 axis.ticks = element_blank()) +
+    facet_grid(cols = vars(variable), rows = vars(factor(model, levels = c("True\nFactors", "MOFA", "SPEAR\nw.x = 1", "SPEAR\nw.x = 0.5", "SPEAR\nw.x = 0"))), scales = "free_y")
+fig2B.tr
+fig2B.te
+```
+
+2C) Correlation Heatmap for Factors:
+
+```{r}
+cor.res <- readRDS("Figure2/Fig1B_corr.rds")
+c.melt.tr <- reshape2::melt(cor.res$train$cors)
+p.melt.tr <- reshape2::melt(cor.res$train$p.value)
+c.melt.tr$p.value <- p.melt.tr$value
+c.melt.tr$train_test <- "train"
+c.melt.te <- reshape2::melt(cor.res$test$cors)
+p.melt.te <- reshape2::melt(cor.res$test$p.value)
+c.melt.te$p.value <- p.melt.te$value
+c.melt.te$train_test <- "test"
+c.melt <- rbind(c.melt.tr, c.melt.te)
+
+MOFA.num.fact <- 2
+True.fact <- 5
+SPEAR.fact <- 5
+
+#c.melt <- c.melt[!is.na(c.melt$value),]
+
+geom.seg.df <- data.frame(x =    c(0, 0, 0, 0, 0, 0, 0, 5),
+                          xend = c(5, 5, 5, 5, 5, 5, 0, 5),
+                          y =    c(0, 1, 6, 11, 13, 18, 0, 0),
+                          yend = c(0, 1, 6, 11, 13, 18, 18, 18)) + .5
+geom.seg.df$y <- geom.seg.df$y * -1 + 19
+geom.seg.df$yend <- geom.seg.df$yend * -1 + 19
+
+# replace:
+c.melt$Var1 <- as.character(c.melt$Var1)
+c.melt$Var2 <- as.character(c.melt$Var2)
+# True:
+c.melt$Var1 <- gsub("True_", "True Factor", c.melt$Var1)
+c.melt$Var2 <- gsub("True_", "True Factor", c.melt$Var2)
+# SPEAR w = 1
+c.melt$Var1 <- gsub("SPEAR1.0_", "w.x=1.0 Factor", c.melt$Var1)
+c.melt$Var2 <- gsub("SPEAR1.0_", "w.x=1.0 Factor", c.melt$Var2)
+# MOFA
+c.melt$Var1 <- gsub("MOFA_", "MOFA Factor", c.melt$Var1)
+c.melt$Var2 <- gsub("MOFA_", "MOFA Factor", c.melt$Var2)
+# SPEAR w = 0.5
+c.melt$Var1 <- gsub("SPEAR0.5_", "w.x=0.5 Factor", c.melt$Var1)
+c.melt$Var2 <- gsub("SPEAR0.5_", "w.x=0.5 Factor", c.melt$Var2)
+# SPEAR w = 0
+c.melt$Var1 <- gsub("SPEAR0_", "w.x=0    Factor", c.melt$Var1)
+c.melt$Var2 <- gsub("SPEAR0_", "w.x=0    Factor", c.melt$Var2)
+
+swap_values <- function(m, v1, v2){
+  m$Var1 <- gsub(v1, "temp", m$Var1)
+  m$Var2 <- gsub(v1, "temp", m$Var2)
+  m$Var1 <- gsub(v2, v1, m$Var1)
+  m$Var2 <- gsub(v2, v1, m$Var2)
+  m$Var1 <- gsub("temp", v2, m$Var1)
+  m$Var2 <- gsub("temp", v2, m$Var2)
+  return(m)
+}
+
+c.melt <- swap_values(c.melt, "w.x=1.0 Factor3", "w.x=1.0 Factor5")
+c.melt <- swap_values(c.melt, "w.x=1.0 Factor4", "w.x=1.0 Factor5")
+c.melt <- swap_values(c.melt, "w.x=0.5 Factor2", "w.x=0.5 Factor3")
+c.melt <- swap_values(c.melt, "w.x=0.5 Factor3", "w.x=0.5 Factor5")
+
+lvls <- c("True Factor1",     "True Factor2",     "True Factor3",     "True Factor4",     "True Factor5",     "MOFA Factor1",
+"MOFA Factor2",     "w.x=1.0 Factor1",  "w.x=1.0 Factor2",  "w.x=1.0 Factor3",  "w.x=1.0 Factor4",  "w.x=1.0 Factor5", 
+"w.x=0.5 Factor1",  "w.x=0.5 Factor2",  "w.x=0.5 Factor3",  "w.x=0.5 Factor4",  "w.x=0.5 Factor5",  "w.x=0    Factor1")
+
+c.melt.tmp <- c.melt %>% dplyr::filter(train_test == "train")
+
+fig2B.tr <- ggplot(c.melt.tmp) +
+  geom_tile(aes(y = factor(Var1, levels = unique(Var1)), x = factor(Var2, levels =lvls), fill = abs(value)), color = "black", lwd = .1) +
+  geom_point(aes(y = factor(Var1, levels = unique(Var1)), x = factor(Var2, levels = lvls)), shape = ifelse(c.melt.tmp$p.value < .001, "*", NA), size = 7, color = "grey90") +
+  geom_segment(data = geom.seg.df, aes(y = x, yend = xend, x = y, xend = yend), lwd = .7) +
+  coord_equal() +
+  theme_classic() +
+  xlab(NULL) +
+  ylab(NULL) +
+  labs(fill = "Corr.") +
+  viridis::scale_fill_viridis(option = "A", direction = -1, begin = .2) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = .5, size = 10),
+        axis.text.y = element_text(size = 10),
+        plot.title = element_text(size = 16, hjust = .5),
+        axis.line = element_blank(),
+        legend.title = element_text(size = 10))
+
+c.melt.tmp <- c.melt %>% dplyr::filter(train_test == "test")
+
+fig2B.te <- ggplot(c.melt.tmp) +
+  geom_tile(aes(y = factor(Var1, levels = unique(Var1)), x = factor(Var2, levels =lvls), fill = abs(value)), color = "black", lwd = .1) +
+  geom_point(aes(y = factor(Var1, levels = unique(Var1)), x = factor(Var2, levels = lvls)), shape = ifelse(c.melt.tmp$p.value < .001, "*", NA), size = 7, color = "grey90") +
+  geom_segment(data = geom.seg.df, aes(y = x, yend = xend, x = y, xend = yend), lwd = .7) +
+  coord_equal() +
+  theme_classic() +
+  xlab(NULL) +
+  ylab(NULL) +
+  labs(fill = "Corr.") +
+  viridis::scale_fill_viridis(option = "A", direction = -1, begin = .2) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = .5, size = 10),
+        axis.text.y = element_text(size = 10),
+        plot.title = element_text(size = 16, hjust = .5),
+        axis.line = element_blank(),
+        legend.title = element_text(size = 10))
+
+
+# combo:
+fig2B <- ggplot(c.melt) +
+  geom_tile(aes(y = factor(Var1, levels = unique(Var1)), x = factor(Var2, levels =lvls), fill = abs(value)), color = "black", lwd = .1) +
+  geom_point(aes(y = factor(Var1, levels = unique(Var1)), x = factor(Var2, levels = lvls)), shape = ifelse(c.melt$p.value < .001, "*", NA), size = 7, color = "grey90") +
+  geom_segment(data = geom.seg.df, aes(y = x, yend = xend, x = y, xend = yend), lwd = .7) +
+  coord_equal() +
+  theme_bw() +
+  xlab(NULL) +
+  ylab(NULL) +
+  labs(fill = "Corr.") +
+  viridis::scale_fill_viridis(option = "A", direction = -1, begin = .2) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = .5, size = 10),
+        axis.text.y = element_text(size = 10),
+        plot.title = element_text(size = 16, hjust = .5),
+        axis.line = element_blank(),
+        legend.title = element_text(size = 10),
+        plot.background = element_blank(),
+        strip.background = element_blank()) +
+  facet_wrap(vars(factor(train_test, levels = c("train", "test"))), nrow = 2)
+fig2B
+```
+
+## Figure 3: Ordinal Simulation
+
+Read results file:
+```{r}
+res <- readRDS("Figure3/ordinal_results.rds")
+```
+
+3A) Factor scores for synthetic factors 1-5
+
+```{r}
+df <- as.data.frame(res$U)
+colnames(df) <- paste0("Factor", 1:5)
+df$Y <- factor(res$Yte[,1])
+mean.df.final <- NULL
+total.df <- NULL
+
+for(factor in 1:5){
+  total.mean.df <- NULL
+  for(f in 0:6){
+    means <- mean(dplyr::filter(df, Y == f)[,factor])
+    mean.df <- data.frame(x = f + .5,
+                          xend = f + 1.5,
+                          y = means,
+                          yend = means,
+                          Factor = paste0("Factor", factor))
+    total.mean.df <- rbind(total.mean.df, mean.df)
+  }
+  
+  tmp <- df[c(factor, 6)]
+  tmp$Factor <- paste0("Factor", factor)
+  colnames(tmp)[1] <- "fs"
+  total.df <- rbind(total.df, tmp)
+  mean.df.final <- rbind(mean.df.final, total.mean.df)
+  
+}
+
+#total.df <- filter(total.df, Factor == "Factor1")
+#mean.df.final <- filter(mean.df.final, Factor == "Factor1")
+
+fig.3A <- ggplot(total.df) +
+  #geom_hline(yintercept = c(-3:3), size = .1, color = "grey50") +
+  geom_violin(aes(x = Y, y = fs, fill = Y), alpha = .3) +
+  geom_jitter(aes(x = Y, y = fs, fill = Y), shape = 21, stroke = .2, size = 2, width = .1) +
+  ggplot2::geom_segment(data = mean.df.final, ggplot2::aes(x = x, xend = xend, y = y, yend = yend), size = .85) +
+  viridis::scale_fill_viridis(begin = .2, discrete = TRUE, option = "B") +
+  theme_bw() +
+  scale_x_discrete(labels = paste0("Class", 1:7)) +
+  theme(panel.background = element_rect(fill = NULL, color = "black", size = 1),
+        axis.line = element_blank(),
+        axis.text.x = element_text(angle = 315, hjust = 0, vjust = .5, size = 10),
+        axis.text.y = element_text(size = 10),
+        panel.grid = element_blank(),
+        strip.background = element_blank(),
+        strip.text = element_text(size = 12),
+        plot.margin = margin(0, 2, 0, 0, "cm")) +
+  guides(fill = "none") +
+  ylab("Factor1") +
+  xlab(NULL) +
+  ylim(-3.2, 3.2) +
+  facet_grid(cols = vars(Factor))
+```
+
+3B) Embedding samples by synthetic F1 and F2
+
+```{r}
+df <- as.data.frame(res$U)
+colnames(df) <- paste0("Factor", 1:5)
+df$Y <- factor(res$Yte[,1])
+fig.ordinal.f1.f2 <- ggplot(df) +
+  geom_point(aes(x = Factor1, y = Factor2, fill = Y),shape = 21, size = 1.5, stroke = .3, alpha = 1) +
+  scale_shape_manual(values = c(1, 2, 4, 3, 5, 6, 7, 8, 10)) +
+  xlim(-2.2, 2.2) +
+  #scale_fill_brewer(palette = "Greens") +
+  scale_fill_manual(
+    values = ORDINAL_COLORS
+  ) +
+  theme_classic() +
+  theme(panel.background = element_rect(fill = NULL, color = "black", size = 1),
+        axis.line = element_blank()) +
+  guides(fill = "none")
+
+```
+
+3C) Balanced Error Rates
+
+```{r}
+all.errors <- readRDS("Figure3/finalresults.rds")
+
+all.error.df <- NULL
+
+for(idx in 1:10){
+  
+  error.df <- do.call("rbind", lapply(1:3, function(i){
+    r <- all.errors[[idx]][[i]]
+    tmp <- as.data.frame(do.call("rbind", r$errors))
+    tmp$misclass_error <- as.numeric(tmp$misclass_error)
+    tmp$ber <- as.numeric(tmp$ber)
+    tmp$sigtonoise <- names(res)[i]
+    tmp$model <- rownames(tmp)
+    tmp$iter <- idx
+    return(tmp)
+    }))
+  rownames(error.df) <- NULL
+  all.error.df <- rbind(all.error.df, error.df)
+}
+
+error.df <- all.error.df
+
+error.df$sigtonoise <- sapply(error.df$sigtonoise, function(s){
+  if(s == "low"){
+    return("Low Signal")
+  } else if(s == "med"){
+    return("Moderate Signal")
+  } else {
+    return("High Signal")
+  }
+})
+
+error.df$sigtonoise <- factor(error.df$sigtonoise, levels = c("Low Signal", "Moderate Signal", "High Signal"))
+
+fig.3C <- ggplot(filter(error.df, sigtonoise == "Moderate Signal")) +
+  geom_hline(yintercept = seq(.4, .5, by = .05), size = .1, color = "grey50") +
+  #geom_line(aes(x = model, y = ber, group = iter), color = "black", size = .5) +
+  geom_boxplot(aes(x = model, y = ber, group = model), fill = adjustcolor(SPEAR_COLOR, alpha.f = .3), color = "black", size = .5) +
+  geom_point(aes(x = model, y = ber), fill = SPEAR_COLOR, color = "black", size = 3, shape = 21) +
+  facet_grid(cols = vars(sigtonoise)) +
+  xlab(NULL) +
+  ylab("Balanced\nMisclass. Error") +
+  scale_x_discrete(labels = c("SPEAR (sd)\nGaussian", "SPEAR (sd)\nMultinomial", "SPEAR (sd)\nOrdinal")) +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 0, hjust = .5, vjust = .5, size = 10),
+        axis.text.y = element_text(size = 10),
+        panel.grid = element_blank(),
+        strip.background = element_blank(),
+        strip.text = element_text(size = 12),
+        plot.margin = margin(0, 2, 0, 0, "cm"),
+        panel.background = element_rect(color = "black", size = 1),
+        axis.line = element_blank())
+```
+
+3D) Histograms of model predictions:
+
+```{r}
+preds <- res$low$df
+# plot predictions:
+all.vals.melted <- reshape2::melt(preds, id.vars = c("true"))
+all.vals.melted$true <- factor(all.vals.melted$true)
+all.vals.melted$value <- factor(all.vals.melted$value)
+all.vals.melted$variable <- factor(all.vals.melted$variable, levels = c(
+"SPEARgaussian",
+"SPEARmulti",
+"SPEARordinal",
+"TrueVals"
+))
+
+fig.low.preds <- ggplot(all.vals.melted) +
+  geom_histogram(aes(x = value, fill = true), color = "black", size = .1, stat = "count") +
+  facet_grid(cols = vars(variable), scales = "free_y") + theme_classic() +
+  theme(strip.background = element_rect(fill = "white", size = 0),
+        panel.background = element_rect(fill = NULL, color = "black", size = 1), 
+        strip.text = element_text(size = 12)) +
+  ylab("Count") +
+  scale_fill_manual(values = ORDINAL_COLORS) +
+  xlab(NULL)
+
+preds <- res$med$df
+# plot predictions:
+colnames(preds)[1:4] <- c(
+"SPEARgaussian (sd)",
+"SPEARmulti (sd)",
+"SPEARordinal (sd)",
+"True Classes"
+)
+all.vals.melted <- reshape2::melt(preds, id.vars = c("true"))
+all.vals.melted$true <- paste0("Class", all.vals.melted$true + 1)
+all.vals.melted$true <- factor(all.vals.melted$true)
+all.vals.melted$value <- factor(all.vals.melted$value)
+all.vals.melted$variable <- factor(all.vals.melted$variable, levels = c(
+"SPEARgaussian (sd)",
+"SPEARmulti (sd)",
+"SPEARordinal (sd)",
+"True Classes"
+))
+
+fig.med.preds <- ggplot(all.vals.melted) +
+  geom_histogram(aes(x = value, fill = true), color = "black", size = .1, stat = "count") +
+  facet_grid(cols = vars(variable), scales = "free_y") + theme_classic() +
+  theme(strip.background = element_rect(fill = "white", size = 0),
+        panel.background = element_rect(fill = NULL, color = "black", size = 1), 
+        strip.text = element_text(size = 12)) +
+  ylab("Count") +
+  labs(fill = "True Class") +
+  scale_fill_manual(values = ORDINAL_COLORS) +
+  xlab(NULL) +
+  scale_x_discrete(labels = paste0("Class", 1:7)) +
+  theme(axis.text.x = element_text(angle = 315, hjust = 0, vjust = .5, size = 10))
+
+preds <- res$high$df
+# plot predictions:
+all.vals.melted <- reshape2::melt(preds, id.vars = c("true"))
+all.vals.melted$true <- factor(all.vals.melted$true)
+all.vals.melted$value <- factor(all.vals.melted$value)
+all.vals.melted$variable <- factor(all.vals.melted$variable, levels = c(
+"SPEARgaussian",
+"SPEARmulti",
+"SPEARordinal",
+"TrueVals"
+))
+
+fig.high.preds <- ggplot(all.vals.melted) +
+  geom_histogram(aes(x = value, fill = true), color = "black", size = .1, stat = "count") +
+  facet_grid(cols = vars(variable), scales = "free_y") + theme_classic() +
+  theme(strip.background = element_rect(fill = "white", size = 0),
+        panel.background = element_rect(fill = NULL, color = "black", size = 1), 
+        strip.text = element_text(size = 12)) +
+  ylab("Count") +
+  scale_fill_manual(values = ORDINAL_COLORS) +
+  xlab(NULL)
+
+fig.3D <- fig.med.preds
+```
+
+3E) Class probabilities for the ordinal model:
+
+```{r}
+probs <- as.data.frame(readRDS("Figure3/SPEARord_probs.rds")$Y1$class.probabilities)
+probs$Y <- factor(paste0("Class ", as.numeric(res$Yte[,1] + 1)))
+probs.melt <- reshape2::melt(probs, id.vars = "Y")
+fig.3E <- ggplot(probs.melt) +
+  #eom_hline(yintercept = seq(0, 1, by = .25), size = .1, color = "grey50") +
+  geom_boxplot(aes(x = variable, y = value, fill = Y)) +
+  viridis::scale_fill_viridis(begin = .2, discrete = TRUE, option = "B") +
+  scale_x_discrete(labels = paste0("Class", 1:7)) +
+  theme_bw() +
+  theme(panel.background = element_rect(fill = NULL, color = "black", size = 1),
+        axis.line = element_blank()) +
+  guides(fill = "none") +
+  facet_grid(cols = vars(Y)) +
+  xlab(NULL) +
+  ylab("Probability") +
+  theme(axis.text.x = element_text(angle = 315, hjust = 0, vjust = .5, size = 10),
+        axis.text.y = element_text(size = 10),
+        panel.grid = element_blank(),
+        strip.background = element_blank(),
+        strip.text = element_text(size = 12),
+        plot.margin = margin(0, 2, 0, 0, "cm"))
+```
+
+## Figure 4: Real data empirical results
+
+TCGA (4A - 4D)
+
+```{r}
+path_to_SPEAR_object <- "~/Documents/Coding/IMPACC/SPEAR/TCGA_tests/SPEAR_full_30.rds"
+SPEARobj <- SPEAR::load.SPEARobject(path_to_SPEAR_object)
+```
+
+4A) Predictions Comparison (TCGA-BC)
+
+```{r}
+files <- paste0(c(paste0("SPEARmin_", seq(5, 35, by = 5)),
+           paste0("SPEARsd_", seq(5, 35, by = 5)),
+           paste0("MOFA_", seq(5, 35, by = 5)),
+           "DIABLO_4",
+           "Lasso_4"), ".rds")
+
+total.res <- list()
+for(file in files){
+  res <- readRDS(paste0("Figure4/", file))
+  splt <- stringr::str_split(gsub(".rds", "", file), "_")[[1]]
+  res$model <- splt[1]
+  res$num.factors <- as.numeric(splt[2])
+  res$misclass_error_ind <- NULL
+  total.res[[file]] <- res
+}
+comb <- as.data.frame(do.call("rbind", total.res))
+comb[c(1, 2, 4)] <- apply(comb[c(1, 2, 4)], 2, as.numeric)
+comb$model <- as.character(comb$model)
+comb$model.simplified <- gsub("sd", "", comb$model)
+
+
+
+comb <- rbind(
+  comb[which(comb$model == "SPEARmin" & comb$num.factors == 30),],
+  comb[which(comb$model == "SPEARsd" & comb$num.factors == 30),],
+  comb[which(comb$model == "MOFA" & comb$num.factors == 15),],
+  comb[which(comb$model == "DIABLO"),],
+  comb[which(comb$model == "Lasso"),]
+)
+comb$model.loc <- c(1, 2, 3.2, 4.4, 5.6)
+
+SPEARobj$set.weights(method = "min")
+comb$bal_misclass_error[1] <- SPEARobj$get.misclassification(data = "test")$balanced_misclass_error
+SPEARobj$set.weights(method = "sd")
+comb$bal_misclass_error[2] <- SPEARobj$get.misclassification(data = "test")$balanced_misclass_error
+
+comb <- dplyr::filter(comb, model.simplified != "SPEARmin")
+
+fig.4A <- ggplot(comb) +
+  geom_hline(yintercept = 0, size = .3, color = "grey30") +
+  geom_hline(yintercept = c(.05, .1, .15), size = .1, color = "grey30") +
+  geom_bar(aes(x = model.loc, y = bal_misclass_error, fill = model.simplified), stat = "identity", color = "black", size = .1) +
+  scale_x_continuous(breaks = c(1, 2, 3.2, 4.4, 5.6),
+                     labels = c("SPEAR (min)", "SPEAR", "MOFA", "DIABLO", "Lasso")) +
+  theme_classic() +
+  theme(
+    axis.text.x = element_text(angle = 315, hjust = 0, size = 10),
+    plot.title = element_text(size = 16, hjust = .5, vjust = .5),
+    legend.position = "bottom",
+    legend.title = element_text(vjust = .8),
+    axis.line = element_blank(),
+    panel.background = element_rect(color = "black", size = 1),
+  ) +
+  xlab(NULL) +
+  ylab("Balanced Misclass. Error") +
+  guides(fill = "none") +
+  scale_fill_manual(values = c(
+    SPEAR = SPEAR_COLOR,
+    SPEARmin = SPEAR_MIN_COLOR,
+    Lasso = LASSO_COLOR,
+    MOFA = MOFA_COLOR,
+    DIABLO = DIABLO_COLOR
+  )) +
+  ggtitle("TCGA (Breast Cancer)")
+```
+
+4B) SPEAR predictions (TCGA-BC)
+
+```{r}
+df <- as.data.frame(SPEARobj$get.predictions(data = "test")$class.predictions)
+df$true.class <- as.numeric(apply(SPEARobj$data$test$Y, 1, which.max)-1)
+df$pred.class <- factor(c("Basal", "Her2", "LumB", "LumA")[df$pred.class+1], levels = c("Basal", "Her2", "LumB", "LumA"))
+df$true.class <- factor(c("Basal", "Her2", "LumB", "LumA")[df$true.class+1], levels = c("Basal", "Her2", "LumB", "LumA"))
+
+
+fig.4B <- ggplot(df) +
+  geom_hline(yintercept = seq(0, 300, by = 100), size = .1) +
+  geom_histogram(aes(x = pred.class, fill = true.class), color = "black", stat = "count", size = .1) +
+  theme_classic() +
+  theme(axis.line = element_blank(),
+        panel.background = element_rect(color = "black", size = 1),
+        plot.title = element_text(hjust = .5, vjust = .5),
+        legend.position = "bottom") +
+  xlab("Predicted Class") +
+  ylab("Count") +
+  labs(fill = "True Class") +
+  ggtitle("SPEAR Predictions")
+```
+
+4C/4D) AUROC Values (TCGA-BC)
+
+```{r}
+# TCGA:
+
+# AUC PLOT:
+SPEARobj <- readRDS("~/Documents/Coding/IMPACC/SPEAR/TCGA_tests/SPEAR_full_30.rds")
+mofa.lasso <- readRDS("~/Documents/Coding/IMPACC/SPEAR/TCGA_tests/TCGA_roc_res.rds")
+
+Y.tr <- apply(SPEARobj$data$train$Y, 1, which.max) - 1
+Y.te <- apply(SPEARobj$data$test$Y, 1, which.max) - 1
+
+SPEAR_COLOR <- "#CD71FC"
+SPEAR_MIN_COLOR <- "#3D3B8E"
+MOFA_COLOR <- "#81BA67"
+LASSO_COLOR <- "#E7B268"
+DIABLO_COLOR <- "#65B7FC"
+
+model_list <- c(
+  "Lasso" = LASSO_COLOR,
+  "MOFA" = MOFA_COLOR,
+  "SPEARsd" = SPEAR_COLOR,
+  "SPEARmin" = SPEAR_MIN_COLOR,
+  "DIABLO" = DIABLO_COLOR
+)
+
+get_ROC = function(probs, Y, classes, class.name = NULL){
+    p.res <- pROC::roc(predictor = probs, response = true.class, ci = TRUE, boot.n=100, ci.alpha=0.9, stratified=FALSE)
+    return(list(
+      roc = p.res,
+      df = data.frame(
+        tpr = p.res$sensitivities,
+        fpr = p.res$specificities,
+        auc = rep(p.res$auc, length(p.res$sensitivities)),
+        sd = rep(p.res$ci[2] - p.res$ci[1], length(p.res$sensitivities)),
+        class = rep(class.name, length(p.res$sensitivities))
+      )))
+}
+
+SPEARobj$set.weights(method = "min")
+preds.tr <- SPEARobj$get.predictions(data = "train", cv = TRUE)
+probs.min.tr <- preds.tr$class.probabilities
+preds.te <- SPEARobj$get.predictions(data = "test", cv = TRUE)
+probs.min.te <- preds.te$class.probabilities
+SPEARobj$set.weights(method = "sd")
+preds.tr <- SPEARobj$get.predictions(data = "train", cv = TRUE)
+probs.sd.tr <- preds.tr$class.probabilities
+preds.te <- SPEARobj$get.predictions(data = "test", cv = TRUE)
+probs.sd.te <- preds.te$class.probabilities
+prob.list <- list(
+  SPEARsd.tr = probs.sd.tr,
+  SPEARmin.tr = probs.min.tr,
+  MOFA.tr = mofa.lasso$mofa.probs$train,
+  Lasso.tr = mofa.lasso$lasso.probs$train,
+  DIABLO.tr = mofa.lasso$diablo.probs$train[,c(1,2,4,3)],
+  SPEARsd.te = probs.sd.te,
+  SPEARmin.te = probs.min.te,
+  MOFA.te = mofa.lasso$mofa.probs$test,
+  Lasso.te = mofa.lasso$lasso.probs$test,
+  DIABLO.te = mofa.lasso$diablo.probs$test[,c(1,2,4,3)]
+)
+Y.list <- list(
+  SPEARsd.tr = Y.tr,
+  SPEARmin.tr = Y.tr,
+  MOFA.tr = Y.tr,
+  Lasso.tr = Y.tr,
+  DIABLO.tr = Y.tr,
+  SPEARsd.te = Y.te,
+  SPEARmin.te = Y.te,
+  MOFA.te = Y.te,
+  Lasso.te = Y.te,
+  DIABLO.te = Y.te
+)
+all.res <- data.frame()
+all.roc <- list()
+for(model in names(prob.list)){
+  print(model)
+  prob.mat <- prob.list[[model]]
+  Y <- Y.list[[model]]
+  res.list <- list()
+  roc.list <- list()
+  for(j in 1:ncol(SPEARobj$data$train$Y)){
+    print(j)
+    class.A <- colnames(SPEARobj$data$train$Y)[j]
+    # 1st get DF of all probabilities:
+    
+    class.idx <- which(colnames(prob.list$SPEARmin.tr) == class.A)
+    if(model == "DIABLO.te"){
+      prob.mat <- apply(prob.mat, 2, function(x){(x-min(x))/(max(x)-min(x))})
+    }
+    probs.A <- prob.mat[,class.idx]
+    #probs.A[probs.A < 0] <- 0
+    #probs.A[probs.A > 1] <- 1
+    true.class.tr <- apply(SPEARobj$data$train$Y, 1, function(row){
+      idx = which.max(row)
+      if(idx == class.idx){
+        return("A")
+      }
+      return("B")
+    })
+    true.class.te <- apply(SPEARobj$data$test$Y, 1, function(row){
+      idx = which.max(row)
+      if(idx == class.idx){
+        return("A")
+      }
+      return("B")
+    })
+    
+    if(grepl("tr", model)){
+      true.class <- true.class.tr
+    } else {
+      true.class <- true.class.te
+    }
+    
+    res <- get_ROC(probs.A, true.class, classes = c("A", "B"), class.name = class.A)
+    res.list[[j]] <- res$df
+    roc.list[[j]] <- res$roc
+  }
+  all.roc[[model]] <- roc.list
+  res.df <- do.call("rbind", res.list)
+  res.df$model <- model
+  all.res <- rbind(all.res, res.df)
+}
+
+all.res$model <- gsub(".te", "", all.res$model)
+
+all.res <- dplyr::filter(all.res, model %in% names(model_list))
+
+all.res$model <- factor(all.res$model, levels = c("Lasso.tr", "DIABLO.tr", "MOFA.tr", "SPEARsd.tr", "SPEARmin.tr",
+                                                  "Lasso", "DIABLO", "MOFA", "SPEARsd", "SPEARmin"))
+
+auc.df <- dplyr::distinct(all.res, auc, sd, class, model) %>% dplyr::arrange(class, -auc)
+rownames(auc.df) <- NULL
+auc.df$auc.scaled <- auc.df$auc - .5
+
+#write.csv(auc.df, file = "~/Documents/Coding/IMPACC/SPEAR/FigureGenerator/Figure4/AUC_PLOT_TCGA.csv")
+
+all.res$fpr <- 1-all.res$fpr
+all.res <- all.res[nrow(all.res):1,]
+all.res <- dplyr::filter(all.res, class == "LumB", model %in% c("SPEARsd", "MOFA", "DIABLO", "Lasso"))
+all.res$model <- gsub("sd", "", all.res$model)
+fig.4D <- ggplot(all.res) +
+  geom_abline(slope = 1, linetype = "dashed", color = "grey10", size = .2) +
+  geom_line(aes(x = fpr, y = tpr, color = model)) +
+  scale_color_manual(values = c(
+    SPEAR = SPEAR_COLOR,
+    MOFA = MOFA_COLOR,
+    Lasso = LASSO_COLOR,
+    DIABLO = DIABLO_COLOR
+  )) +
+  #facet_wrap(vars(class), nrow = 1) +
+  xlab("FPR") +
+  ylab("TPR") +
+  #theme_dark()
+  theme_bw() +
+  guides(color = "none")
+
+
+# test methods:
+# LumB:
+all.p.val.mat.melt <- data.frame()
+for(idx in 1:4){
+  cur.class <- colnames(SPEARobj$data$train$Y)[idx]
+  p.val.mat <- matrix(1, nrow = 4, ncol = 4)
+  rownames(p.val.mat) <- colnames(p.val.mat) <- c("SPEARsd.te", "MOFA.te", "Lasso.te", "DIABLO.te")
+  for(i in 1:4){
+    for(j in 1:4){
+      p.val.mat[i,j] <- pROC::roc.test(all.roc[[rownames(p.val.mat)[i]]][[idx]], all.roc[[colnames(p.val.mat)[j]]][[idx]])$p.value
+    }
+  }
+  p.val.mat[upper.tri(p.val.mat)] <- NA
+  diag(p.val.mat) <- NA
+  p.val.mat.melt <- reshape2::melt(p.val.mat) %>% dplyr::filter(!is.na(value))
+  p.val.mat.melt$class <- cur.class
+  colnames(p.val.mat.melt) <- c("group1", "group2", "p.adj", "class")
+  all.p.val.mat.melt <- rbind(all.p.val.mat.melt, p.val.mat.melt)
+}
+all.p.val.mat.melt$p.adj <- signif(all.p.val.mat.melt$p.adj, 2)
+all.p.val.mat.melt.sig <- dplyr::filter(all.p.val.mat.melt, p.adj <= .05)
+
+auc.df$model <- factor(auc.df$model, levels = c("SPEARmin", "SPEARsd", "MOFA", "Lasso", "DIABLO"))
+
+fig.4C <- ggplot(dplyr::filter(auc.df, model != "SPEARmin")) +
+  geom_bar(aes(fill = model, y = auc.scaled, x = model), position = "dodge2", stat = "identity") +
+  geom_errorbar(aes(x = model, ymin = auc.scaled - sd, ymax = auc.scaled + sd), position = "dodge2", stat = "identity", width = .5) +
+  geom_segment(data = data.frame(
+    x =    c(1, 1, 1, 1, 1, 1, 2, 3, 4),
+    xend = c(2, 3, 4, 1, 1, 1, 2, 3, 4),
+    y =    ((c(1.01, 1.04, 1.07, 1.01, 1.04, 1.07, 1.01, 1.04, 1.07)-1)/.5)+1 - .5,
+    yend = ((c(1.01, 1.04, 1.07, 1.005, 1.035, 1.065, 1.005, 1.035, 1.065)-1)/.5)+1 - .5
+  ),
+  aes(x = x, xend = xend, y = y, yend = yend), size = .4) +
+  geom_text(data = data.frame(
+    x = rep(c(1.5, 2, 2.5), 4),
+    y = rep(((c(1.02, 1.05, 1.08)-1)/.5)+1, 4) - .5,
+    label = sapply(dplyr::filter(all.p.val.mat.melt, group2 == "SPEARsd.te")$p.adj, function(p){if(p>.05)return("");if(p>.005)return("*");if(p>.0005)return("**");return("***")}),
+    class = rep(c("Basal", "Her2", "LumB", "LumA"), each = 3)
+  ),
+  aes(x = x, y = y, label = label), size = 3) +
+  scale_fill_manual(values = c(
+    SPEARsd = SPEAR_COLOR,
+    SPEARmin = SPEAR_MIN_COLOR,
+    MOFA = MOFA_COLOR,
+    Lasso = LASSO_COLOR,
+    DIABLO = DIABLO_COLOR
+  )) +
+  scale_y_continuous(breaks = seq(0, .5, length.out = 6), labels = round(seq(.5, 1, length.out = 6), 2), limits = c(0, .68)) +
+  scale_x_discrete(labels = c("SPEAR", "MOFA", "Lasso", "DIABLO")) +
+  theme_bw() +
+  theme(panel.grid.minor = element_blank(),
+        panel.grid.minor.x = element_blank(),
+        panel.grid.major.x = element_blank(),
+        axis.text.x = element_text(angle = 270, vjust = .5, hjust = 0),
+        legend.position = "bottom") +
+  labs(fill = "model") +
+  ylab("AUROC") +
+  xlab(NULL) + 
+  facet_grid(cols = vars(class)) +
+  guides(fill = "none")
+```
+
+COVID-19 (4E - 4H)
+
+```{r}
+path_to_SPEAR_object <- "~/Documents/Coding/IMPACC/SPEAR/FigureGenerator/Figure6/SPEARCOVID_final_k22.rds"
+SPEARobj <- SPEAR::load.SPEARobject(path_to_SPEAR_object)
+```
+
+4E) Predictions Comparison (COVID-19)
+
+```{r}
+errors <- readRDS(file = "Figure6/COMBINED_ERRORS_COVID19.rds")
+
+SPEAR.errors <- errors$SPEAR
+SPEAR.errors.df <- do.call("rbind", lapply(SPEAR.errors, function(tmp){
+  df.min <- data.frame(misclass_error = tmp$min$misclass_error,
+                       balanced_misclass_error = tmp$min$balanced_misclass_error,
+                       model = "SPEARmin",
+                       model.simplified = "SPEARmin")
+  df.sd <- data.frame(misclass_error = tmp$sd$misclass_error,
+                       balanced_misclass_error = tmp$sd$balanced_misclass_error,
+                      model = "SPEARsd",
+                      model.simplified = "SPEARsd")
+  return(rbind(df.min, df.sd))
+}))
+SPEAR.errors.df$k <- as.numeric(rep(names(SPEAR.errors), each = 2))
+rownames(SPEAR.errors.df) <- NULL
+SPEAR.errors.df <- dplyr::arrange(SPEAR.errors.df, model, k)
+
+MOFA.errors <- errors$MOFA
+MOFA.errors.df <- do.call("rbind", lapply(MOFA.errors, function(tmp){
+  df <- data.frame(misclass_error = tmp$misclass_error,
+                       balanced_misclass_error = tmp$balanced_misclass_error,
+                       model = "MOFA",
+                       model.simplified = "MOFA")
+  return(df)
+}))
+MOFA.errors.df$k <- as.numeric(names(MOFA.errors))
+rownames(MOFA.errors.df) <- NULL
+MOFA.errors.df <- dplyr::arrange(MOFA.errors.df, k)
+
+DIABLO.errors <- errors$DIABLO
+DIABLO.errors.df <- data.frame(
+  misclass_error = DIABLO.errors$misclass_error,
+  balanced_misclass_error = DIABLO.errors$balanced_misclass_error,
+  model = "DIABLO",
+  model.simplified = "DIABLO",
+  k = 4
+)
+Lasso.errors <- errors$Lasso
+Lasso.errors.df <- data.frame(
+  misclass_error = Lasso.errors$misclass_error,
+  balanced_misclass_error = Lasso.errors$balanced_misclass_error,
+  model = "Lasso",
+  model.simplified = "Lasso",
+  k = 4
+)
+
+total.preds.df <- rbind(SPEAR.errors.df,
+                        MOFA.errors.df,
+                        DIABLO.errors.df,
+                        Lasso.errors.df)
+total.preds.df <- filter(total.preds.df, k != 40)
+total.preds.df$model.loc <- c(
+  # SPEAR
+  c(seq(0, .8, length.out = 8),
+    seq(1, 1.8, length.out = 8)
+    ),
+  # MOFA
+  seq(2, 2.8, length.out = 7),
+  # DIABLO
+  seq(3, 3.1, length.out = 1),
+  # Lasso
+  seq(3.2, 3.3, length.out = 1)
+)
+
+# Simplify:
+
+total.preds.df <- rbind(
+  total.preds.df[which(total.preds.df$model.simplified == "SPEARmin" & total.preds.df$k == 22),],
+  total.preds.df[which(total.preds.df$model.simplified == "SPEARsd" & total.preds.df$k == 22),],
+  total.preds.df[which(total.preds.df$model.simplified == "MOFA" & total.preds.df$k == 15),],
+  total.preds.df[which(total.preds.df$model.simplified == "DIABLO"),],
+  total.preds.df[which(total.preds.df$model.simplified == "Lasso"),]
+)
+total.preds.df$model.loc <- c(1, 2, 3.2, 4.4, 5.6)
+
+total.preds.df <- dplyr::filter(total.preds.df, model.simplified != "SPEARmin")
+
+fig.4E <- ggplot(total.preds.df) +
+  geom_hline(yintercept = 0, size = .3, color = "grey30") +
+  geom_hline(yintercept = c(.1, .2), size = .1, color = "grey30") +
+  geom_bar(aes(x = model.loc, y = balanced_misclass_error, fill = model.simplified), stat = "identity", color = "black", size = .1) +
+  scale_x_continuous(breaks = c(1, 2, 3.2, 4.4, 5.6),
+                     labels = c("SPEAR (min)", "SPEAR", "MOFA", "DIABLO", "Lasso")) +
+  theme_classic() +
+  theme(
+    axis.text.x = element_text(angle = 315, hjust = 0, size = 10),
+    plot.title = element_text(size = 16, hjust = .5, vjust = .5),
+    legend.position = "bottom",
+    legend.title = element_text(vjust = .8),
+    axis.line = element_blank(),
+    panel.background = element_rect(color = "black", size = 1),
+  ) +
+  xlab(NULL) +
+  ylab("Balanced Misclass. Error") +
+  guides(fill = "none") +
+  scale_fill_manual(values = c(
+    SPEARsd = SPEAR_COLOR,
+    SPEARmin = SPEAR_MIN_COLOR,
+    Lasso = LASSO_COLOR,
+    MOFA = MOFA_COLOR,
+    DIABLO = DIABLO_COLOR
+  )) +
+  ggtitle("COVID-19")
+
+```
+
+4F) SPEAR Predictions (COVID-19)
+
+```{r}
+preds <- read.csv("Figure6/fig4F_predictions.csv")
+df <- as.data.frame(preds[,2] + 1)
+colnames(df) <- "pred.class"
+rownames(df) <- preds$X
+true.classes <- as.numeric(apply(SPEARobj$data$train$Y, 1, which.max))
+names(true.classes) <- rownames(SPEARobj$data$train$Y)
+df$true.class <- sapply(rownames(df), function(n){return(true.classes[n])})
+# Change to strings:
+df$pred.class <- factor(c("Healthy", "Mild", "Moderate", "Severe")[df$pred.class], levels = c("Healthy", "Mild", "Moderate", "Severe"))
+df$true.class <- factor(c("Healthy", "Mild", "Moderate", "Severe")[df$true.class], levels = c("Healthy", "Mild", "Moderate", "Severe"))
+
+
+fig.4F <- ggplot(df) +
+  geom_hline(yintercept = seq(0, 120, by = 40), size = .1) +
+  geom_histogram(aes(x = pred.class, fill = true.class), color = "black", stat = "count", size = .1) +
+  theme_classic() +
+  theme(axis.line = element_blank(),
+        panel.background = element_rect(color = "black", size = 1),
+        plot.title = element_text(hjust = .5, vjust = .5),
+        legend.position = "bottom") +
+  xlab("Predicted Class") +
+  ylab("Count") +
+  labs(fill = "True Class") +
+  scale_y_continuous(breaks = seq(0, 120, by = 40)) +
+  scale_fill_manual(values = SEVERITY_COLORS) +
+  ggtitle("SPEAR Predictions")
+```
+
+4G/4H) AUROC Values (COVID-19)
+
+```{r}
+# AUC PLOT:
+SPEARobj <- readRDS("~/Documents/Coding/IMPACC/SPEAR/COVID19/SPEARCOVID_final_k25.rds")
+mofa.lasso <- readRDS("~/Documents/Coding/IMPACC/SPEAR/COVID19/COVID19_roc_res.rds")
+
+Y <- apply(SPEARobj$data$train$Y, 1, which.max)
+
+prob.list <- list(
+  SPEARsd = mofa.lasso$spear.sd.probs,
+  SPEARmin = mofa.lasso$spear.min.probs,
+  MOFA = mofa.lasso$mofa.probs$test,
+  Lasso = mofa.lasso$lasso.probs$test,
+  DIABLO = mofa.lasso$diablo.probs$test
+)
+
+# reorder...
+Y <- Y[rownames(prob.list$SPEARsd)]
+
+all.res <- data.frame()
+all.roc <- list()
+for(model in names(prob.list)){
+  prob.mat <- prob.list[[model]]
+  res.list <- list()
+  roc.list <- list()
+  for(j in 1:ncol(SPEARobj$data$train$Y)){
+    class.A <- colnames(SPEARobj$data$train$Y)[j]
+    # 1st get DF of all probabilities:
+    class.idx <- j
+    probs.A <- prob.mat[,class.idx]
+    true.class <- sapply(Y, function(y.tmp){
+      if(y.tmp == class.idx){
+        return("A")
+      }
+      return("B")
+    })
+    
+    res <- get_ROC(probs.A, true.class, classes = c("A", "B"), class.name = class.A)
+    res.list[[j]] <- res$df
+    roc.list[[j]] <- res$roc
+  }
+  all.roc[[model]] <- roc.list
+  res.df <- do.call("rbind", res.list)
+  res.df$model <- model
+  all.res <- rbind(all.res, res.df)
+}
+
+all.res$model <- factor(all.res$model, levels = c("Lasso", "MOFA", "DIABLO", "SPEARsd", "SPEARmin"))
+
+auc.df <- dplyr::distinct(all.res, auc, sd, class, model) %>% dplyr::arrange(class, -auc)
+rownames(auc.df) <- NULL
+auc.df$auc.scaled <- auc.df$auc - .5
+
+#write.csv(auc.df, file = "~/Documents/Coding/IMPACC/SPEAR/FigureGenerator/Figure4/AUC_PLOT_COVID19.csv")
+
+all.res$fpr <- 1-all.res$fpr
+all.res <- all.res[nrow(all.res):1,]
+all.res <- dplyr::filter(all.res, class == "Moderate", model %in% c("SPEARsd", "MOFA", "Lasso", "DIABLO"))
+all.res$model <- gsub("sd", "", all.res$model)
+g.auroc.moderate <- ggplot(all.res) +
+  geom_abline(slope = 1, linetype = "dashed", color = "grey10", size = .2) +
+  geom_line(aes(x = fpr, y = tpr, color = model)) +
+  scale_color_manual(values = c(
+    SPEAR = SPEAR_COLOR,
+    MOFA = MOFA_COLOR,
+    Lasso = LASSO_COLOR,
+    DIABLO = DIABLO_COLOR
+  )) +
+  #facet_wrap(vars(class), nrow = 1) +
+  xlab("FPR") +
+  ylab("TPR") +
+  #theme_dark()
+  theme_bw()+
+  guides(color = "none")
+
+
+# test methods:
+# Moderate:
+all.p.val.mat.melt <- data.frame()
+for(idx in 1:4){
+  cur.class <- colnames(SPEARobj$data$train$Y)[idx]
+  p.val.mat <- matrix(1, nrow = 4, ncol = 4)
+  rownames(p.val.mat) <- colnames(p.val.mat) <- c("SPEARsd", "MOFA", "Lasso", "DIABLO")
+  for(i in 1:4){
+    for(j in 1:4){
+      p.val.mat[i,j] <- pROC::roc.test(all.roc[[rownames(p.val.mat)[i]]][[idx]], all.roc[[colnames(p.val.mat)[j]]][[idx]])$p.value
+    }
+  }
+  p.val.mat[upper.tri(p.val.mat)] <- NA
+  diag(p.val.mat) <- NA
+  p.val.mat.melt <- reshape2::melt(p.val.mat) %>% dplyr::filter(!is.na(value))
+  p.val.mat.melt$class <- cur.class
+  colnames(p.val.mat.melt) <- c("group1", "group2", "p.adj", "class")
+  all.p.val.mat.melt <- rbind(all.p.val.mat.melt, p.val.mat.melt)
+}
+all.p.val.mat.melt$p.adj <- signif(all.p.val.mat.melt$p.adj, 2)
+all.p.val.mat.melt.sig <- dplyr::filter(all.p.val.mat.melt, p.adj <= .05)
+
+auc.df$model <- factor(auc.df$model, levels = c("SPEARmin", "SPEARsd", "MOFA", "Lasso", "DIABLO"))
+
+g.auroc.covid <- ggplot(dplyr::filter(auc.df, model != "SPEARmin")) +
+  geom_bar(aes(fill = model, y = auc.scaled, x = model), position = "dodge2", stat = "identity") +
+  geom_errorbar(aes(x = model, ymin = auc.scaled - sd, ymax = auc.scaled + sd), position = "dodge2", stat = "identity", width = .5) +
+  geom_segment(data = data.frame(
+    x =    c(1, 1, 1, 1, 1, 1, 2, 3, 4),
+    xend = c(2, 3, 4, 1, 1, 1, 2, 3, 4),
+    y =    ((c(1.01, 1.04, 1.07, 1.01, 1.04, 1.07, 1.01, 1.04, 1.07)-1)/.5)+1 - .5,
+    yend = ((c(1.01, 1.04, 1.07, 1.005, 1.035, 1.065, 1.005, 1.035, 1.065)-1)/.5)+1 - .5
+  ),
+            aes(x = x, xend = xend, y = y, yend = yend), size = .4) +
+  geom_text(data = data.frame(
+    x = rep(c(1.5, 2, 2.5), 4),
+    y = rep(((c(1.02, 1.05, 1.08)-1)/.5)+1, 4) - .5,
+    label = sapply(dplyr::filter(all.p.val.mat.melt, group2 == "SPEARsd")$p.adj, function(p){if(p>.05)return("");if(p>.005)return("*");if(p>.0005)return("**");return("***")}),
+    class = rep(c("Healthy", "Mild", "Moderate", "Severe"), each = 3)
+  ),
+            aes(x = x, y = y, label = label), size = 3) +
+  scale_fill_manual(values = c(
+    SPEARsd = SPEAR_COLOR,
+    SPEARmin = SPEAR_MIN_COLOR,
+    MOFA = MOFA_COLOR,
+    Lasso = LASSO_COLOR,
+    DIABLO = DIABLO_COLOR
+  )) +
+  scale_y_continuous(breaks = seq(0, .5, length.out = 6), labels = round(seq(.5, 1, length.out = 6), 2), limits = c(0, .68)) +
+  scale_x_discrete(labels = c("SPEAR", "MOFA", "Lasso", "DIABLO")) +
+  theme_bw() +
+  theme(panel.grid.minor = element_blank(),
+        panel.grid.minor.x = element_blank(),
+        panel.grid.major.x = element_blank(),
+        axis.text.x = element_text(angle = 270, vjust = .5, hjust = 0),
+        legend.position = "bottom") +
+  labs(fill = "model") +
+  ylab("AUROC") +
+  xlab(NULL) + 
+  facet_grid(cols = vars(class)) +
+  guides(fill = "none")
+
+
+
+
+
+
+
+
+# Plot together:
+cowplot::plot_grid(g.auroc.tcga, g.auroc.lumb, NULL, NULL, g.auroc.covid, g.auroc.moderate, nrow = 3, rel_widths = c(1, .6), rel_heights = c(1, .1, 1))
+```
+
+## Figure 5: TCGA-BC Interpretation
+
+Load in results file and SPEARobject:
+
+```{r}
+# Load the SPEAR object:
+path_to_SPEAR_object <- "~/Documents/Coding/IMPACC/SPEAR/TCGA_tests/SPEAR_full_30.rds"
+SPEARobj <- SPEAR::load.SPEARobject(path_to_SPEAR_object)
+SPEARobj.orig <- SPEARobj$clone(deep = TRUE)
+
+# Reset names of features:
+colnames(SPEARobj$data$train$Xlist$mrna) <- gsub("_mrna", "", colnames(SPEARobj$data$train$Xlist$mrna))
+colnames(SPEARobj$data$train$Xlist$mirna) <- gsub("_mirna", "", colnames(SPEARobj$data$train$Xlist$mirna))
+colnames(SPEARobj$data$train$Xlist$meth) <- gsub("_meth", "", colnames(SPEARobj$data$train$Xlist$meth))
+colnames(SPEARobj$data$train$X) <- c(colnames(SPEARobj$data$train$Xlist$mrna),
+                                        colnames(SPEARobj$data$train$Xlist$mirna),
+                                        colnames(SPEARobj$data$train$Xlist$meth))
+
+# Set the proper SPEAR weights:
+SPEARobj$set.weights(method = "sd")
+```
+
+5A) F1, F2, and F3 scores by tumor subtype:
+
+```{r}
+fig.5A <- SPEARobj$plot.factor.scores(data = "test", factors = 1:3) +
+  theme_bw() +
+  scale_x_discrete(labels = colnames(SPEARobj$data$train$Y)) +
+  theme(panel.background = element_rect(fill = NULL, color = "black", size = 1),
+        axis.line = element_blank(),
+        axis.text.x = element_text(angle = 315, hjust = 0, vjust = .5, size = 10),
+        axis.text.y = element_text(size = 10),
+        panel.grid = element_blank(),
+        strip.background = element_blank(),
+        strip.text = element_text(size = 12),
+        plot.title = element_blank()) +
+  guides(fill = "none") +
+  ylab("Factor Score") +
+  xlab(NULL)
+```
+
+5B) Embedding by F1, F2, and F3 in a 3D space:
+
+```{r}
+fs <- as.data.frame(SPEARobj$get.factor.scores(data = "test"))
+fs$Y <- factor(colnames(SPEARobj$data$test$Y)[apply(SPEARobj$data$test$Y, 1, which.max)])
+theta <- 0
+phi <- 20
+fig.5B <- ggplot(fs, aes(x = Factor1, y = Factor2, z = Factor3, fill = Y)) +
+  stat_3D(theta = theta, phi = phi, size = 3.5, shape = 21, stroke = .2, alpha = 1) +
+  scale_fill_manual(values = SPEARobj$options$color.scheme$Y) +
+  scale_color_manual(values = SPEARobj$options$color.scheme$Y) +
+  theme_classic() +
+  theme(panel.background = element_blank(),
+        axis.line = element_blank(),
+        plot.title = element_text(hjust = .5, size = 14),
+        axis.text = element_blank(),
+        axis.ticks = element_blank(),
+        axis.title = element_blank()) +
+  guides(fill = "none", color = "none") +
+  ggtitle(NULL)
+```
+
+5C) GSEA Results:
+
+Run GSEA on loadings for F1 - F3:
+
+```{r}
+SPEARobj.gs <- SPEARobj
+all_tables <- list()
+for(f in 1:3){
+  # Step 1: GSEA on all mrna genes from loadings:
+  # Get all genes via probability.cutoff = 0
+  feat.df <- SPEARobj.gs$get.features(factors = f, datasets = "mrna", probability.cutoff = 0)
+  # Sort (desc. by projection.coefficient), necessary for GSEA
+  feat.df <- dplyr::arrange(feat.df, -projection.coefficient)
+  # Use projection.coefficient, name by uniprot id
+  feature_list <- feat.df$projection.coefficient
+  names(feature_list) <- feat.df$Feature
+  
+  # Set seed for reproducibility
+  set.seed(42)
+  
+  # Get terminology list: This will use the Hallmark pathways
+  C7_t2g <- msigdbr::msigdbr(species = "Homo sapiens", category = "H") %>% 
+    dplyr::select(gs_name, gene_symbol)
+  
+  # Run GSEA
+  gseakegg.res <-  clusterProfiler::GSEA(geneList = feature_list,
+                                         minGSSize    = 10,
+                                         maxGSSize    = 500,
+                                         pvalueCutoff = 0.001,
+                                         pAdjustMethod = "BH",
+                                         TERM2GENE = C7_t2g)
+  all_tables[[f]] <- gseakegg.res
+}
+```
+
+Combine F1 - F3 table results:
+ 
+```{r}
+all_pathways <- sort(unique(do.call("rbind", lapply(all_tables, function(t){return(t@result)}))$ID))
+pathway.mat <- matrix(NA, nrow = 3, ncol = length(all_pathways))
+rownames(pathway.mat) <- paste0("Factor", 1:3)
+colnames(pathway.mat) <- all_pathways
+
+for(f in 1:3){
+  for(j in 1:ncol(pathway.mat)){
+    cur.path <- colnames(pathway.mat)[j]
+    if(cur.path %in% all_tables[[f]]@result$ID){
+      pathway.mat[f,j] <- all_tables[[f]]@result$p.adjust[which(all_tables[[f]]@result$ID == cur.path)]
+      if(all_tables[[f]]@result$NES[which(all_tables[[f]]@result$ID == cur.path)] <= 0){
+        pathway.mat[f,j] <- -pathway.mat[f,j]
+      }
+    }
+  }
+}
+```
+
+Plot scores:
+
+```{r}
+df.melt <- reshape2::melt(pathway.mat)
+df.melt$Var2 <- factor(df.melt$Var2, levels = unique(filter(arrange(df.melt, Var1, abs(value)), !is.na(value))$Var2))
+df.melt$direction <- df.melt$value > 0
+
+fig.5C <- ggplot(df.melt) +
+  geom_tile(data = df.melt, aes(x = Var2, y = Var1), fill = "white", color = "black", size = .1) +
+  geom_point(data = filter(df.melt, direction == TRUE, !is.na(value)), aes(x = Var2, y = factor(Var1, levels = paste0("Factor", 3:1)), fill = -log(value)), color = "black", shape = 21, size = 7) +
+  geom_point(data = filter(df.melt, direction != TRUE, !is.na(value)), aes(x = Var2, y = factor(Var1, levels = paste0("Factor", 3:1)), fill = log(abs(value))), color = "black", shape = 21, size = 7) +
+  theme_void() +
+  theme(axis.text.x = element_text(angle = 315, hjust = 0, vjust = .5, size = 8),
+        axis.text.y = element_text(size = 10),
+        legend.position = "top",
+        legend.title = element_text(vjust = .8),
+        plot.margin = unit(c(0, 4, 0, 0), "cm"),
+        plot.title = element_text(size = 12, hjust = .5)) +
+  scale_fill_gradient2(na.value = "black", high = "darkred", mid = "white", low = "darkblue") +
+  scale_x_discrete(labels = c("Estrogen Response (Early)",
+                              "Estrogen Response (Late)",
+                              "MYC Targets V1",
+                              "Allograft Rejection",
+                              "E2F Targets",
+                              "Interferon Alpha Response",
+                              "Epithelial Mesenchymal Transition",
+                              "Apical Junction",
+                              "TNFA Signaling via NFKB",
+                              "UV Response DN",
+                              "Myogenesis",
+                              "G2M Checkpoint")) +
+  labs(fill = "p.adj") +
+  guides(fill = "none") +
+  ggtitle("Enriched Hallmark Pathways") +
+  coord_equal()
+
+df.melt$value[is.na(df.melt$value)] <- 1
+fig.5A.leg <- ggplot(df.melt) +
+  geom_tile(data = df.melt, aes(x = Var2, y = Var1), fill = "white", color = "black", size = .1) +
+  #geom_point(aes(x = Var2, y = factor(Var1, levels = paste0("Factor", 3:1)), fill = -log(value)), color = "black", shape = 21, size = 5) +
+  geom_point(aes(x = Var2, y = factor(Var1, levels = paste0("Factor", 3:1)), fill = -log(abs(value))), color = "black", shape = 21, size = 5) +
+  theme_void() +
+  theme(axis.text.x = element_text(angle = 315, hjust = 0, vjust = .5, size = 8),
+        axis.text.y = element_text(size = 10),
+        legend.position = "top",
+        legend.title = element_text(vjust = .8),
+        plot.margin = unit(c(0, 4, 0, 0), "cm")) +
+  #scale_fill_gradient2(na.value = "black", high = "darkblue", mid = "white", low = "darkred") +
+  scale_fill_gradient2(na.value = "black", high = "darkred", mid = "white", low = "darkblue") +
+  labs(fill = "-log(p.adj)") +
+  coord_equal()
+```
+
+5D) GSEA Estrogen Response (Early) Plot:
+
+```{r}
+gsInfo <- function(object, geneSetID) {
+    geneList <- object@geneList
+
+    if (is.numeric(geneSetID))
+        geneSetID <- object@result[geneSetID, "ID"]
+
+    geneSet <- object@geneSets[[geneSetID]]
+    exponent <- object@params[["exponent"]]
+    df <- gseaScores(geneList, geneSet, exponent, fortify=TRUE)
+    df$ymin <- 0
+    df$ymax <- 0
+    pos <- df$position == 1
+    h <- diff(range(df$runningScore))/20
+    df$ymin[pos] <- -h
+    df$ymax[pos] <- h
+    df$geneList <- geneList
+
+    df$Description <- object@result[geneSetID, "Description"]
+    return(df)
+}
+gseaScores <- getFromNamespace("gseaScores", "DOSE")
+
+df.SPEAR <- gsInfo(all_tables[[1]], 1)
+
+spear.col <- "#B663EC"
+
+df.SPEAR$position <- df.SPEAR$position * -.1
+i.min <- which.min(df.SPEAR$runningScore)
+color.vec <- sapply(1:nrow(df.SPEAR), function(i){
+  if(i >= i.min){
+    return("blue")
+  }
+  return("grey30")
+})
+min.val <- df.SPEAR$runningScore[which.min(df.SPEAR$runningScore)]
+df.SPEAR$runningScore <- df.SPEAR$runningScore - min.val + .03
+df.SPEAR$scaled.coef <- scales::rescale(df.SPEAR$geneList, to = c(0, .1))-0.04698104 - .05
+cur.df <- df.SPEAR
+cur.col <- "blue"
+cur.lab <- "SPEAR"
+fig.5D <- ggplot() +
+  geom_segment(aes(x = c(0, 0, 0, 0), xend = rep(nrow(cur.df), 4), y = c(0, -.2, -.4, -.6) - min.val + .03, yend = c(0, -.2, -.4, -.6) - min.val + .03), color = "grey80") +
+  geom_segment(aes(x = c(0), xend = nrow(cur.df), y = -min.val + .03, yend = -min.val + .03), color = "grey50", size = 1) +
+  geom_ribbon(data = cur.df[nrow(cur.df):which.min(cur.df$runningScore),], aes(x = x, ymin = runningScore, ymax = -min.val + .03), fill = adjustcolor(cur.col, alpha.f = .2)) +
+  geom_line(data = cur.df, aes(x = x, y = runningScore), color = cur.col) +
+  geom_rect(aes(xmin = 0, xmax = nrow(cur.df), ymin = -.1, ymax = 0), fill = "#F8F8F8", color = NA) +
+  geom_ribbon(data = cur.df, aes(x = x, ymin = -.05, ymax = scaled.coef), alpha = .5) +
+  geom_segment(aes(x = 0, xend = nrow(cur.df), y = -.05, yend = -.05), color = "grey30") +
+  geom_segment(aes(x = which.min(df.SPEAR$runningScore), xend = which.min(df.SPEAR$runningScore),
+                   y = -min.val + .03, yend = df.SPEAR$runningScore[which.min(df.SPEAR$runningScore)]), color = "blue", size = .5, linetype = "dashed") +
+  geom_segment(data = cur.df, aes(x = x, xend = x, y = 0, yend = position), color = color.vec, stat = "identity") +
+  geom_segment(aes(x = 0, xend = nrow(cur.df), y = 0, yend = 0), color = "black") +
+  geom_segment(aes(x = 0, xend = nrow(cur.df), y = -.1, yend = -.1), color = "black") +
+  scale_y_continuous(breaks = c(-.05, c(0, -.2, -.4, -.6) - min.val + .03), labels = c("coef", 0, -0.2, -0.4, -0.6)) +
+  xlab("mRNA Genes\n(ranked by coef)") +
+  ylab("Summed ES") +
+  ggtitle("Estrogen Response (Early)") +
+  theme_classic() +
+  theme(plot.title = element_text(hjust = .5),
+        axis.line = element_blank(),
+        axis.ticks = element_blank(),
+        plot.margin = unit(c(0, 0, 0, 0), "cm"))
+```
+
+5E) Estrogen Response Pathway Members Expression:
+
+```{r} 
+ESTROGEN.HALLMARK <- c("ABAT","ABCA3","ABHD2","ABLIM1","ADCY1","ADCY9","ADD3","AFF1","AKAP1","ALDH3B1","AMFR","ANXA9","AQP3","AR","AREG","ARL3","ASB13","B4GALT1","BAG1","BCL11B","BCL2","BHLHE40","BLVRB","CA12","CALB2","CALCR","CANT1","CBFA2T3","CCN5","CCND1","CD44","CELSR1","CELSR2","CHPT1","CISH","CLDN7","CLIC3","CXCL12","CYP26B1","DEPTOR","DHCR7","DHRS2","DHRS3","DLC1","DYNLT3","EGR3","ELF1","ELF3","ELOVL2","ELOVL5","ENDOD1","ESRP2","FAM102A","FARP1","FASN","FCMR","FDFT1","FHL2","FKBP4","FKBP5","FLNB","FOS","FOXC1","FRK","GAB2","GFRA1","GJA1","GLA","GREB1","HES1","HR","HSPB8","IGF1R","IGFBP4","IL17RB","IL6ST","INHBB","INPP5F","ISG20L2","ITPK1","JAK2","KAZN","KCNK15","KCNK5","KDM4B","KLF10","KLF4","KLK10","KRT13","KRT15","KRT18","KRT19","KRT8","LAD1","LRIG1","MAPT","MAST4","MED13L","MED24","MICB","MINDY1","MLPH","MPPED2","MREG","MSMB","MUC1","MYB","MYBBP1A","MYBL1","MYC","MYOF","NADSYN1","NAV2","NBL1","NCOR2","NPY1R","NRIP1","NXT1","OLFM1","OLFML3","OPN3","OVOL2","P2RY2","PAPSS2","PDLIM3","PDZK1","PEX11A","PGR","PLAAT3","PMAIP1","PODXL","PPIF","PRSS23","PTGES","RAB17","RAB31","RAPGEFL1","RARA","RASGRP1","RBBP8","REEP1","RET","RETREG1","RHOBTB3","RHOD","RPS6KA2","RRP12","SCARB1","SCNN1A","SEC14L2","SEMA3B","SFN","SH3BP5","SIAH2","SLC16A1","SLC19A2","SLC1A1","SLC1A4","SLC22A5","SLC24A3","SLC26A2","SLC27A2","SLC2A1","SLC37A1","SLC39A6","SLC7A2","SLC7A5","SLC9A3R1","SNX24","SOX3","STC2","SULT2B1","SVIL","SYBU","SYNGR1","SYT12","TBC1D30","TFAP2C","TFF1","TFF3","TGIF2","TGM2","THSD4","TIAM1","TIPARP","TJP3","TMEM164","TMPRSS3","TOB1","TPBG","TPD52L1","TSKU","TTC39A","TUBB2B","UGCG","UNC119","WFS1","WWC1","XBP1","ZNF185")
+
+# How many are found?
+sum(ESTROGEN.HALLMARK %in% colnames(SPEARobj$data$train$Xlist$mrna))
+rel.ESTROGEN.HALLMARK <- ESTROGEN.HALLMARK[ESTROGEN.HALLMARK %in% colnames(SPEARobj$data$train$Xlist$mrna)]
+expr.df <- SPEARobj$data$test$Xlist$mrna[,sapply(rel.ESTROGEN.HALLMARK, function(g){
+  return(which(colnames(SPEARobj$data$train$Xlist$mrna) == g)[1])
+})]
+
+# Order df by factor scores:
+fs <- SPEARobj$get.factor.scores(data = "test")
+fs.1 <- fs[,1]
+o <- order(fs.1)
+expr.df <- expr.df[o,]
+
+#hc = hclust(dist(t(expr.df)))
+#col.o <- hc$order
+feat.df <- SPEARobj$get.features(probability.cutoff = 0, factors = 1, coefficient.cutoff = .02)
+feat.df.rel <- dplyr::filter(feat.df, Feature %in% colnames(expr.df))
+feat.df.rel <- dplyr::arrange(feat.df.rel, projection.coefficient)
+feat.df.rel <- feat.df.rel[!duplicated(feat.df.rel$Feature),]
+expr.df = expr.df[,feat.df.rel$Feature,drop=FALSE]
+
+expr.df.melt <- reshape2::melt(expr.df)
+
+cap <- 3.5
+expr.df.melt$value[which(expr.df.melt$value >= cap)] <- cap
+expr.df.melt$value[which(expr.df.melt$value <= -cap)] <- -cap
+
+
+SPEARobj.gs <- SPEARobj
+f <- 1
+
+# Step 1: GSEA on all mrna genes from loadings:
+# Get all genes via probability.cutoff = 0
+feat.df <- SPEARobj.gs$get.features(factors = f, datasets = "mrna", probability.cutoff = 0)
+# Sort (desc. by projection.coefficient), necessary for GSEA
+feat.df <- dplyr::arrange(feat.df, -projection.coefficient)
+# Use projection.coefficient, name by uniprot id
+feature_list <- feat.df$projection.coefficient
+names(feature_list) <- feat.df$Feature
+
+# Set seed for reproducibility
+set.seed(42)
+
+# Get terminology list: This will use the Hallmark pathways
+C7_t2g <- msigdbr::msigdbr(species = "Homo sapiens", category = "H") %>% 
+  dplyr::select(gs_name, gene_symbol)
+
+# Run GSEA
+SPEARk25.gsekegg.res <-  clusterProfiler::GSEA(geneList = feature_list,
+                                       minGSSize    = 10,
+                                       maxGSSize    = 500,
+                                       pvalueCutoff = 0.05,
+                                       pAdjustMethod = "BH",
+                                       TERM2GENE = C7_t2g)
+
+
+estrogen.rel.prots <- stringr::str_split(SPEARk25.gsekegg.res@result$core_enrichment, "/")[[3]]
+
+tick.colors = ifelse(feat.df.rel$projection.coefficient <= 0, "blue", "grey50")
+
+g.estrogen.expr.prots <- ggplot(expr.df.melt) +
+  geom_tile(aes(x = Var1, y = Var2, fill = value)) +
+  scale_fill_gradient2(low = "cyan", mid = "black", high = "red") +
+  theme_classic() +
+  ylab(NULL) +
+  xlab("Samples\n(ranked by Factor1 Score)") +
+  theme(axis.text.x = element_blank(),
+        axis.text.y = element_text(size = 10, color = tick.colors, face = ifelse(tick.colors == "blue", "bold", "plain")),
+        axis.ticks.x = element_blank(),
+        axis.line = element_blank(),
+        axis.title.x = element_text(size = 9),
+        legend.position = "bottom",
+        legend.title = element_text(vjust = .8)) +
+  labs(fill = "Expr.")
+
+g.estrogen.expr.proj.coef <- ggplot(reshape2::melt(dplyr::select(feat.df.rel, Feature, projection.coefficient))) +
+  geom_tile(aes(x = variable, y = factor(Feature, levels = unique(Feature)), fill = value), color = "black", size = .2) +
+  xlab("Samples\n(ranked by Factor1 Score)") +
+  scale_fill_gradient2(low = "darkblue", high = "darkred", labels = c(-.02, 0, .02), breaks = c(-.02, 0, .02)) +
+  theme_void() +
+  theme(axis.title.x = element_text(size = 9, color = "white"), legend.title = element_text(vjust = .8), legend.position = "bottom") +
+  labs(fill = "Coef.")
+
+g.estrogen.expr.joint.prob<- ggplot(reshape2::melt(dplyr::select(feat.df.rel, Feature, joint.probability))) +
+  geom_tile(aes(x = variable, y = factor(Feature, levels = unique(Feature)), fill = value), color = "black", size = .2) +
+  xlab("Samples\n(ranked by F1 Score)") +
+  scale_fill_gradient2(high = "darkred") +
+  theme_void() +
+  theme(axis.title.x = element_text(size = 9, color = "white"), legend.title = element_text(vjust = .8), legend.position = "bottom") +
+  labs(fill = "Prob.")
+
+```
+
+Response
+
+```{r}
+resp.df <- data.frame(
+  id = rownames(fs)[o],
+  resp = factor(sapply(rownames(fs)[o], function(id){
+    return(which.max(SPEARobj$data$test$Y[id,]))
+  }), levels = 1:4)
+)
+rownames(resp.df) <- NULL
+
+resp.df.melt <- reshape2::melt(resp.df)
+
+g.estrogen.expr.resp <- ggplot(resp.df.melt) +
+  geom_tile(aes(x = factor(id, levels = unique(id)), y = 1, fill = resp)) +
+  scale_fill_manual(values = unname(SPEARobj$options$color.scheme$Y)) +
+  scale_y_continuous(breaks = 1, labels = c("True")) +
+  theme_classic() +
+  ylab(NULL) +
+  xlab(NULL) +
+  theme(axis.text.x = element_blank(),
+        axis.text.y = element_text(size = 10),
+        axis.ticks.x = element_blank(),
+        axis.line = element_blank(),
+        axis.title.x = element_text(size = 9),
+        legend.position = "bottom")
+```
+
+Predictions
+
+```{r}
+preds <- SPEARobj$get.predictions(data = "test")
+
+resp.df <- data.frame(
+  id = rownames(fs)[o],
+  resp = factor(sapply(rownames(fs)[o], function(id){
+    return(preds$class.predictions[id,] + 1)
+  }), levels = 1:4)
+)
+rownames(resp.df) <- NULL
+
+resp.df.melt <- reshape2::melt(resp.df)
+
+g.estrogen.expr.preds <- ggplot(resp.df.melt) +
+  geom_tile(aes(x = factor(id, levels = unique(id)), y = 1, fill = resp)) +
+  scale_fill_manual(values = unname(SPEARobj$options$color.scheme$Y)) +
+  scale_y_continuous(breaks = 1, labels = c("Pred")) +
+  theme_classic() +
+  ylab(NULL) +
+  xlab(NULL) +
+  theme(axis.text.x = element_blank(),
+        axis.text.y = element_text(size = 10),
+        axis.ticks.x = element_blank(),
+        axis.line = element_blank(),
+        axis.title.x = element_text(size = 9),
+        legend.position = "bottom")
+```
+
+Factor Scores
+
+```{r}
+resp.df <- as.data.frame(fs[o,1,drop = FALSE])
+resp.df$id <- 1:nrow(resp.df)
+rownames(resp.df) <- NULL
+resp.df.melt <- reshape2::melt(resp.df, id.vars = "id")
+
+g.estrogen.expr.fs1 <- ggplot(resp.df.melt) +
+  geom_tile(aes(x = factor(id, levels = unique(id)), y = 1, fill = value)) +
+  viridis::scale_fill_viridis(option = "B") +
+  scale_y_continuous(breaks = 1, labels = c("Factor1")) +
+  theme_classic() +
+  ylab(NULL) +
+  xlab(NULL) +
+  theme(axis.text.x = element_blank(),
+        axis.text.y = element_text(size = 10),
+        axis.ticks.x = element_blank(),
+        axis.line = element_blank(),
+        axis.title.x = element_text(size = 10),
+        legend.position = "bottom",
+        legend.title = element_text(vjust = .8)) +
+  labs(fill = "Factor Score")
+
+```
+
+Legends
+
+```{r}
+# Extract legends
+g.estrogen.expr.prots.l <- cowplot::get_legend(g.estrogen.expr.prots)
+g.estrogen.expr.preds.l <- cowplot::get_legend(g.estrogen.expr.preds)
+g.estrogen.expr.fs1.l <- cowplot::get_legend(g.estrogen.expr.fs1)
+g.estrogen.expr.resp.l <- cowplot::get_legend(g.estrogen.expr.resp)
+g.estrogen.expr.proj.coef.l <- cowplot::get_legend(g.estrogen.expr.proj.coef)
+g.estrogen.expr.joint.prob.l <- cowplot::get_legend(g.estrogen.expr.joint.prob)
+
+# save w/o legends
+g.estrogen.expr.preds <- g.estrogen.expr.preds + guides(fill = "none") + theme(plot.margin = unit(c(0, 0, 0, 0), "cm"))
+g.estrogen.expr.resp <- g.estrogen.expr.resp + guides(fill = "none") + theme(plot.margin = unit(c(0, 0, 0, 0), "cm"))
+g.estrogen.expr.prots <- g.estrogen.expr.prots + guides(fill = "none") + theme(plot.margin = unit(c(0, 0, 0, 0), "cm"))
+g.estrogen.expr.fs1 <- g.estrogen.expr.fs1 + guides(fill = "none") + theme(plot.margin = unit(c(0, 0, 0, 0), "cm"))
+g.estrogen.expr.proj.coef <- g.estrogen.expr.proj.coef + guides(fill = "none") + theme(plot.margin = unit(c(0, 0, 0, 0), "cm"))
+g.estrogen.expr.joint.prob <- g.estrogen.expr.joint.prob + guides(fill = "none") + theme(plot.margin = unit(c(0, 0, 0, 0), "cm"))
+```
+
+Combine
+
+```{r}
+p.estrogen.comb.plots <- cowplot::plot_grid(g.estrogen.expr.resp, NULL, NULL,
+                   g.estrogen.expr.preds, NULL, NULL,
+                   g.estrogen.expr.fs1, NULL, NULL,
+                   g.estrogen.expr.prots, g.estrogen.expr.proj.coef, g.estrogen.expr.joint.prob,
+                   axis = "l", align = "v", ncol=3, rel_heights = c(.05, .05, .05, 1), rel_widths = c(1, .2, .2))
+p.estrogen.comb.plots
+
+fig.5E <- plot_grid(g.estrogen.expr.prots.l, g.estrogen.expr.proj.coef.l, g.estrogen.expr.joint.prob.l, g.estrogen.expr.fs1.l, ncol = 1)
+```
+
+## Figure 6: COVID-19 Interpretation
+
+6A-6B): Factor2 and Factor8 scores:
+
+```{r fig.width = 6, fig.height=4}
+df <- as.data.frame(SPEARobj.k22$get.factor.scores())
+colnames(df) <- paste0("Factor", 1:ncol(df))
+df$Y <- factor(apply(SPEARobj.k22$data$train$Y, 1, which.max))
+mean.df.final <- NULL
+for(factor in c(2, 8)){
+  total.mean.df <- NULL
+  for(f in 1:4){
+    means <- mean(dplyr::filter(df, Y == f)[,factor])
+    mean.df <- data.frame(x = f - .5,
+                          xend = f + .5,
+                          y = means,
+                          yend = means,
+                          variable = paste0("Factor", factor))
+    total.mean.df <- rbind(total.mean.df, mean.df)
+  }
+  mean.df.final <- rbind(mean.df.final, total.mean.df)
+}
+
+df.melt <- reshape2::melt(df, id.vars = c("Y"))
+
+fig6.a.f2 <- ggplot(dplyr::filter(df.melt, variable %in% "Factor2")) +
+  geom_violin(aes(x = Y, y = value, fill = Y, group = Y), alpha = .2) +
+  geom_jitter(aes(x = Y, y = value, fill = Y), shape = 21, stroke = .2, size = 2, width = .1) +
+  ggplot2::geom_segment(data = dplyr::filter(mean.df.final, variable %in% "Factor2"), ggplot2::aes(x = x, xend = xend, y = y, yend = yend), size = .85) +
+  scale_fill_manual(values = SEVERITY_COLORS) +
+  theme_bw() +
+  scale_x_discrete(labels = colnames(SPEARobj.k22$data$train$Y)) +
+  theme(panel.background = element_rect(fill = NULL, color = "black", size = 1),
+        axis.line = element_blank(),
+        axis.text.x = element_text(angle = 315, hjust = 0, vjust = .5, size = 10),
+        axis.text.y = element_text(size = 10),
+        panel.grid = element_blank(),
+        strip.background = element_blank(),
+        strip.text = element_text(size = 12),
+        plot.title = element_blank()) +
+  guides(fill = "none") +
+  ylab("Factor Score") +
+  xlab(NULL) +
+  facet_grid(cols = vars(variable), scales = "free_y")
+
+fig6.a.f8 <- ggplot(dplyr::filter(df.melt, variable %in% "Factor8")) +
+  geom_violin(aes(x = Y, y = value, fill = Y, group = Y), alpha = .2) +
+  geom_jitter(aes(x = Y, y = value, fill = Y), shape = 21, stroke = .2, size = 2, width = .1) +
+  ggplot2::geom_segment(data = dplyr::filter(mean.df.final, variable %in% "Factor8"), ggplot2::aes(x = x, xend = xend, y = y, yend = yend), size = .85) +
+  scale_fill_manual(values = SEVERITY_COLORS) +
+  theme_bw() +
+  scale_x_discrete(labels = colnames(SPEARobj.k22$data$train$Y)) +
+  theme(panel.background = element_rect(fill = NULL, color = "black", size = 1),
+        axis.line = element_blank(),
+        axis.text.x = element_text(angle = 315, hjust = 0, vjust = .5, size = 10),
+        axis.text.y = element_text(size = 10),
+        panel.grid = element_blank(),
+        strip.background = element_blank(),
+        strip.text = element_text(size = 12),
+        plot.title = element_blank()) +
+  guides(fill = "none") +
+  ylab("Factor Score") +
+  xlab(NULL) +
+  facet_grid(cols = vars(variable), scales = "free_y")
+
+```
+
+6C) GSEA plot
+
+```{r}
+gsInfo <- function(object, geneSetID) {
+    geneList <- object@geneList
+
+    if (is.numeric(geneSetID))
+        geneSetID <- object@result[geneSetID, "ID"]
+
+    geneSet <- object@geneSets[[geneSetID]]
+    exponent <- object@params[["exponent"]]
+    df <- gseaScores(geneList, geneSet, exponent, fortify=TRUE)
+    df$ymin <- 0
+    df$ymax <- 0
+    pos <- df$position == 1
+    h <- diff(range(df$runningScore))/20
+    df$ymin[pos] <- -h
+    df$ymax[pos] <- h
+    df$geneList <- geneList
+
+    df$Description <- object@result[geneSetID, "Description"]
+    return(df)
+}
+gseaScores <- getFromNamespace("gseaScores", "DOSE")
+# need the GSEA object...
+df.SPEAR <- gsInfo(SPEARk22.gsekegg.res, 2)
+
+spear.col <- "#B663EC"
+
+df.SPEAR$position <- df.SPEAR$position * -.1
+i.max <- which.max(df.SPEAR$runningScore)
+color.vec <- sapply(1:nrow(df.SPEAR), function(i){
+  if(i <= i.max){
+    return("red")
+  }
+  return("grey30")
+})
+df.SPEAR$scaled.coef <- scales::rescale(df.SPEAR$geneList, to = c(0, .1))-0.04698104 - .05
+cur.df <- df.SPEAR
+cur.col <- "red"
+cur.lab <- "SPEAR"
+g.gseaplot <- ggplot() +
+  geom_segment(aes(x = c(0, 0, 0, 0), xend = rep(nrow(cur.df), 4), y = c(0, .2, .4, .6), yend = c(0, .2, .4, .6)), color = "grey80") +
+  geom_area(data = cur.df[1:which.max(cur.df$runningScore),], aes(x = x, y = runningScore), fill = adjustcolor(cur.col, alpha.f = .2)) +
+  geom_line(data = cur.df, aes(x = x, y = runningScore), color = cur.col) +
+  geom_rect(aes(xmin = 0, xmax = nrow(cur.df), ymin = -.1, ymax = 0), fill = "#F8F8F8", color = NA) +
+  geom_ribbon(data = cur.df, aes(x = x, ymin = -.05, ymax = scaled.coef), alpha = .5) +
+  geom_segment(aes(x = 0, xend = nrow(cur.df), y = -.05, yend = -.05), color = "grey30") +
+  geom_segment(aes(x = which.max(df.SPEAR$runningScore), xend = which.max(df.SPEAR$runningScore),
+                   y = 0, yend = df.SPEAR$runningScore[which.max(df.SPEAR$runningScore)]), color = "red", size = .5, linetype = "dashed") +
+  geom_segment(data = cur.df, aes(x = x, xend = x, y = 0, yend = position), color = color.vec, stat = "identity") +
+  geom_segment(aes(x = 0, xend = nrow(cur.df), y = 0, yend = 0), color = "black") +
+  geom_segment(aes(x = 0, xend = nrow(cur.df), y = -.1, yend = -.1), color = "black") +
+  scale_y_continuous(breaks = c(-.05, .2, .4, .6), labels = c("coef", 0.2, 0.4, 0.6)) +
+  xlab("Proteins\n(ranked by coef)") +
+  ylab("Summed ES") +
+  ggtitle("GSEA: IL6 JAK STAT3 Signaling") +
+  theme_classic() +
+  theme(plot.title = element_text(hjust = .5),
+        axis.line = element_blank(),
+        axis.ticks = element_blank(),
+        plot.margin = unit(c(0, 0, 0, 0), "cm"))
+```
+
+6D): Embedding for WHO, IL6, and Kynurenine
+
+```{r}
+
+# Severity:
+
+color_var <- c("Healthy", "Mild", "Moderate", "Severe")[apply(SPEARobj.k22$data$train$Y, 1, which.max)]
+
+fs <- SPEARobj.k22$get.factor.scores()
+
+df <- data.frame(
+  Factor2 = fs[,2],
+  Factor8 = fs[,8],
+  severity = c("Healthy", "Mild", "Moderate", "Severe")[apply(SPEARobj.k22$data$train$Y, 1, which.max)],
+  Y = color_var
+)
+df.background <- df
+colnames(df.background) <- paste0(colnames(df.background), "_background")
+
+bg_col <- "grey60"
+bg_fill <- "grey90"
+bg_ellipse <- "grey60"
+
+fig6.d.sev <- ggplot() +
+  stat_ellipse(data = df.background, aes(x = Factor8_background, y = Factor2_background, group = severity_background), color = bg_ellipse) +
+  geom_point(data = df.background, aes(x = Factor8_background, y = Factor2_background), shape = 21, color = bg_col, fill = bg_fill) +
+  # only color each facet:
+  stat_ellipse(data = df, aes(x = Factor8, y = Factor2, group = severity), color = "black") +
+  stat_ellipse(data = df, aes(x = Factor8, y = Factor2, group = severity, fill = Y), geom = "polygon", alpha = .5) +
+  geom_point(data = df, aes(x = Factor8, y = Factor2, fill = Y), shape = 21) +
+  scale_fill_manual(values = SEVERITY_COLORS) +
+  facet_wrap(vars(factor(severity, levels = c("Moderate", "Severe", "Healthy", "Mild"))), nrow = 2) + 
+  xlab("Factor 8") +
+  ylab("Factor 2") +
+  labs(fill = "Severity") +
+  theme_bw()
+
+
+# IL6:
+
+color_var <- SPEARobj.k22$data$train$X[,"IL6"]
+
+fs <- SPEARobj.k22$get.factor.scores()
+
+df <- data.frame(
+  Factor2 = fs[,2],
+  Factor8 = fs[,8],
+  severity = c("Healthy", "Mild", "Moderate", "Severe")[apply(SPEARobj.k22$data$train$Y, 1, which.max)],
+  Y = color_var
+)
+df.background <- df
+colnames(df.background) <- paste0(colnames(df.background), "_background")
+
+bg_col <- "grey60"
+bg_fill <- "grey90"
+fg_fill <- "grey50"
+bg_ellipse <- "grey60"
+
+top = 2
+df$Y[df$Y >= top] <- top
+df$Y[df$Y <= -top] <- -top
+
+fig6.d.il6 <- ggplot() +
+  stat_ellipse(data = df.background, aes(x = Factor8_background, y = Factor2_background, group = severity_background), color = bg_ellipse) +
+  geom_point(data = df.background, aes(x = Factor8_background, y = Factor2_background), shape = 21, color = bg_col, fill = bg_fill) +
+  # only color each facet:
+  stat_ellipse(data = df, aes(x = Factor8, y = Factor2, group = severity), color = "black") +
+  stat_ellipse(data = df, aes(x = Factor8, y = Factor2, group = severity), fill = bg_fill, geom = "polygon", alpha = .3) +
+  geom_point(data = df, aes(x = Factor8, y = Factor2, fill = Y), shape = 21) +
+  #viridis::scale_fill_viridis(option = "C", begin = 0) +
+  scale_fill_gradient2(low = "darkblue", high = "darkred") +
+  facet_wrap(vars(factor(severity, levels = c("Moderate", "Severe", "Healthy", "Mild"))), nrow = 2) + 
+  xlab("Factor 8") +
+  ylab("Factor 2") +
+  labs(fill = "Expr.") +
+  theme_bw()
+
+
+
+# Kynurenine
+
+color_var <- SPEARobj.k22$data$train$X[,"kynurenine"]
+
+fs <- SPEARobj.k22$get.factor.scores()
+
+df <- data.frame(
+  Factor2 = fs[,2],
+  Factor8 = fs[,8],
+  severity = c("Healthy", "Mild", "Moderate", "Severe")[apply(SPEARobj.k22$data$train$Y, 1, which.max)],
+  Y = color_var
+)
+df.background <- df
+colnames(df.background) <- paste0(colnames(df.background), "_background")
+
+bg_col <- "grey60"
+bg_fill <- "grey90"
+fg_fill <- "grey50"
+bg_ellipse <- "grey60"
+
+top = 2
+df$Y[df$Y >= top] <- top
+df$Y[df$Y <= -top] <- -top
+
+fig6.d.kyn <- ggplot() +
+  stat_ellipse(data = df.background, aes(x = Factor8_background, y = Factor2_background, group = severity_background), color = bg_ellipse) +
+  geom_point(data = df.background, aes(x = Factor8_background, y = Factor2_background), shape = 21, color = bg_col, fill = bg_fill) +
+  # only color each facet:
+  stat_ellipse(data = df, aes(x = Factor8, y = Factor2, group = severity), color = "black") +
+  stat_ellipse(data = df, aes(x = Factor8, y = Factor2, group = severity), fill = bg_fill, geom = "polygon", alpha = .3) +
+  geom_point(data = df, aes(x = Factor8, y = Factor2, fill = Y), shape = 21) +
+  #viridis::scale_fill_viridis(option = "C", begin = 0) +
+  scale_fill_gradient2(low = "darkblue", high = "darkred") +
+  facet_wrap(vars(factor(severity, levels = c("Moderate", "Severe", "Healthy", "Mild"))), nrow = 2) + 
+  xlab("Factor 8") +
+  ylab("Factor 2") +
+  labs(fill = "Expr.") +
+  theme_bw()
+
+fig6.d.sev.l <- cowplot::get_legend(fig6.d.sev)
+fig6.d.sev.final <- fig6.d.sev + guides(fill = "none")
+fig6.d.il6.l <- cowplot::get_legend(fig6.d.il6)
+fig6.d.il6.final <- fig6.d.il6 + guides(fill = "none")
+fig6.d.kyn.l <- cowplot::get_legend(fig6.d.kyn)
+fig6.d.kyn.final <- fig6.d.kyn + guides(fill = "none")
+cowplot::plot_grid(fig6.d.sev.final, fig6.d.il6.final, fig6.d.kyn.final, nrow = 1)
+
+fig.6D <- cowplot::plot_grid(fig6.d.sev.l, fig6.d.kyn.l, nrow = 2)
+```
+
+6E) IL6 JAK STAT3 Signaling Pathway Protein Expressions
+
+```{r} 
+expr.df <- SPEARobj.k22$data$train$Xlist$proteomics[,sapply(sort(LE.IL6.HALLMARK), function(g){
+  return(which(colnames(SPEARobj.k22$data$train$Xlist$proteomics) == g)[1])
+})]
+
+# Order df by factor scores:
+fs <- SPEARobj.k22$get.factor.scores()
+fs.2 <- fs[,2]
+o <- order(fs.2)
+expr.df <- expr.df[o,]
+
+#hc = hclust(dist(t(expr.df)))
+#col.o <- hc$order
+feat.df <- SPEARobj.k22$get.features(probability.cutoff = 0, factors = 2)
+feat.df.rel <- dplyr::filter(feat.df, Feature %in% colnames(expr.df))
+feat.df.rel <- dplyr::arrange(feat.df.rel, projection.coefficient)
+feat.df.rel <- feat.df.rel[!duplicated(feat.df.rel$Feature),]
+expr.df = expr.df[,feat.df.rel$Feature,drop=FALSE]
+expr.df.melt <- reshape2::melt(expr.df)
+prots.order <- feat.df.rel$Feature
+cap <- 3
+expr.df.melt$value[which(expr.df.melt$value >= cap)] <- cap
+expr.df.melt$value[which(expr.df.melt$value <= -cap)] <- -cap
+
+g.il6.expr.prots <- ggplot(expr.df.melt) +
+  geom_tile(aes(x = Var1, y = Var2, fill = value)) +
+  scale_fill_gradient2(low = "cyan", mid = "black", high = "red") +
+  theme_classic() +
+  ylab(NULL) +
+  xlab("Samples\n(ranked by Factor2 Score)") +
+  theme(axis.text.x = element_blank(),
+        axis.text.y = element_text(size = 10, color = "black", face = "bold"),
+        axis.ticks.x = element_blank(),
+        axis.line = element_blank(),
+        axis.title.x = element_text(size = 9),
+        legend.position = "bottom",
+        legend.title = element_text(vjust = .8)) +
+  labs(fill = "Expr.")
+
+g.il6.expr.proj.coef <- ggplot(reshape2::melt(dplyr::select(feat.df.rel, Feature, projection.coefficient))) +
+  geom_tile(aes(x = variable, y = factor(Feature, levels = unique(Feature)), fill = value), color = "black", size = .2) +
+  xlab("Samples\n(ranked by Factor1 Score)") +
+  scale_fill_gradient2(low = "white", high = "darkred") +
+  theme_void() +
+  theme(axis.title.x = element_text(size = 9, color = "white"), legend.title = element_text(vjust = .8), legend.position = "bottom") +
+  labs(fill = "Coef.")
+
+g.il6.expr.joint.prob<- ggplot(reshape2::melt(dplyr::select(feat.df.rel, Feature, joint.probability))) +
+  geom_tile(aes(x = variable, y = factor(Feature, levels = unique(Feature)), fill = value), color = "black", size = .2) +
+  xlab("Samples\n(ranked by F1 Score)") +
+  scale_fill_gradient2(high = "darkred") +
+  theme_void() +
+  theme(axis.title.x = element_text(size = 9, color = "white"), legend.title = element_text(vjust = .8), legend.position = "bottom") +
+  labs(fill = "Prob.")
+
+```
+
+Response
+
+```{r}
+resp.df <- data.frame(
+  id = rownames(fs)[o],
+  resp = factor(sapply(rownames(fs)[o], function(id){
+    return(which.max(SPEARobj.k22$data$train$Y[id,]))
+  }), levels = 1:4)
+)
+rownames(resp.df) <- NULL
+
+resp.df.melt <- reshape2::melt(resp.df)
+
+g.il6.expr.resp <- ggplot(resp.df.melt) +
+  geom_tile(aes(x = factor(id, levels = unique(id)), y = 1, fill = resp)) +
+  scale_fill_manual(values = unname(SPEARobj.k22$options$color.scheme$Y)) +
+  scale_y_continuous(breaks = 1, labels = c("True")) +
+  theme_classic() +
+  ylab(NULL) +
+  xlab(NULL) +
+  theme(axis.text.x = element_blank(),
+        axis.text.y = element_text(size = 10),
+        axis.ticks.x = element_blank(),
+        axis.line = element_blank(),
+        axis.title.x = element_text(size = 9),
+        legend.position = "bottom")
+```
+
+Predictions
+
+```{r}
+preds <- SPEARobj.k22$get.predictions()
+
+resp.df <- data.frame(
+  id = rownames(fs)[o],
+  resp = factor(sapply(rownames(fs)[o], function(id){
+    return(preds$class.predictions[id,] + 1)
+  }), levels = 1:4)
+)
+rownames(resp.df) <- NULL
+
+resp.df.melt <- reshape2::melt(resp.df)
+
+g.il6.expr.preds <- ggplot(resp.df.melt) +
+  geom_tile(aes(x = factor(id, levels = unique(id)), y = 1, fill = resp)) +
+  scale_fill_manual(values = unname(SPEARobj.k22$options$color.scheme$Y)) +
+  scale_y_continuous(breaks = 1, labels = c("Pred")) +
+  theme_classic() +
+  ylab(NULL) +
+  xlab(NULL) +
+  theme(axis.text.x = element_blank(),
+        axis.text.y = element_text(size = 10),
+        axis.ticks.x = element_blank(),
+        axis.line = element_blank(),
+        axis.title.x = element_text(size = 9),
+        legend.position = "bottom")
+```
+
+Factor Scores
+
+```{r}
+resp.df <- as.data.frame(fs[o,2,drop = FALSE])
+resp.df$id <- 1:nrow(resp.df)
+rownames(resp.df) <- NULL
+resp.df.melt <- reshape2::melt(resp.df, id.vars = "id")
+
+g.il6.expr.fs2 <- ggplot(resp.df.melt) +
+  geom_tile(aes(x = factor(id, levels = unique(id)), y = 1, fill = value)) +
+  viridis::scale_fill_viridis(option = "B") +
+  scale_y_continuous(breaks = 1, labels = c("Factor2")) +
+  theme_classic() +
+  ylab(NULL) +
+  xlab(NULL) +
+  theme(axis.text.x = element_blank(),
+        axis.text.y = element_text(size = 10),
+        axis.ticks.x = element_blank(),
+        axis.line = element_blank(),
+        axis.title.x = element_text(size = 10),
+        legend.position = "bottom",
+        legend.title = element_text(vjust = .8)) +
+  labs(fill = "Factor Score")
+
+```
+
+Legends
+
+```{r}
+# Extract legends
+g.il6.expr.prots.l <- cowplot::get_legend(g.il6.expr.prots)
+g.il6.expr.preds.l <- cowplot::get_legend(g.il6.expr.preds)
+g.il6.expr.fs2.l <- cowplot::get_legend(g.il6.expr.fs2)
+g.il6.expr.resp.l <- cowplot::get_legend(g.il6.expr.resp)
+g.il6.expr.proj.coef.l <- cowplot::get_legend(g.il6.expr.proj.coef)
+g.il6.expr.joint.prob.l <- cowplot::get_legend(g.il6.expr.joint.prob)
+
+# save w/o legends
+g.il6.expr.preds <- g.il6.expr.preds + guides(fill = "none") + theme(plot.margin = unit(c(0, 0, 0, 0), "cm"))
+g.il6.expr.resp <- g.il6.expr.resp + guides(fill = "none") + theme(plot.margin = unit(c(0, 0, 0, 0), "cm"))
+g.il6.expr.prots <- g.il6.expr.prots + guides(fill = "none") + theme(plot.margin = unit(c(0, 0, 0, 0), "cm"))
+g.il6.expr.fs2 <- g.il6.expr.fs2 + guides(fill = "none") + theme(plot.margin = unit(c(0, 0, 0, 0), "cm"))
+g.il6.expr.proj.coef <- g.il6.expr.proj.coef + guides(fill = "none") + theme(plot.margin = unit(c(0, 0, 0, 0), "cm"))
+g.il6.expr.joint.prob <- g.il6.expr.joint.prob + guides(fill = "none") + theme(plot.margin = unit(c(0, 0, 0, 0), "cm"))
+```
+
+Combine
+
+```{r}
+p.il6.comb.plots <- cowplot::plot_grid(g.il6.expr.resp, NULL, NULL,
+                   g.il6.expr.preds, NULL, NULL,
+                   g.il6.expr.fs2, NULL, NULL,
+                   g.il6.expr.prots, g.il6.expr.proj.coef, g.il6.expr.joint.prob,
+                   axis = "l", align = "v", ncol=3, rel_heights = c(.05, .05, .05, 1), rel_widths = c(1, .2, .2))
+p.il6.comb.plots
+```
+
+```{r}
+cowplot::plot_grid(g.il6.expr.prots.l, g.il6.expr.proj.coef.l, g.il6.expr.joint.prob.l, g.il6.expr.fs2.l, ncol = 1)
+```
+
+6F) Prot - Met Correlations:
+
+```{r}
+IL6.HALLMARK <- c("A2M", "ACVR1B", "ACVRL1", "BAK1", "CBL", "CCL7", "CCR1", "CD14", "CD36", "CD38", "CD44", "CD9", "CNTFR", "CRLF2", "CSF1", "CSF2", "CSF2RA", "CSF2RB", "CSF3R", "CXCL1", "CXCL10", "CXCL11", "CXCL13", "CXCL3", "CXCL9", "DNTT", "EBI3", "FAS", "GRB2", "HAX1", "HMOX1", "IFNAR1", "IFNGR1", "IFNGR2", "IL10RB", "IL12RB1", "IL13RA1", "IL15RA", "IL17RA", "IL17RB", "IL18R1", "IL1B", "IL1R1", "IL1R2", "IL2RA", "IL2RG", "IL3RA", "IL4R", "IL6", "IL6ST", "IL7", "IL9R", "INHBE", "IRF1", "IRF9", "ITGA4", "ITGB3", "JUN", "LEPR", "LTB", "LTBR", "MAP3K8", "MYD88", "OSMR", "PDGFC", "PF4", "PIK3R5", "PIM1", "PLA2G2A", "PTPN1", "PTPN11", "PTPN2", "REG1A", "SOCS1", "SOCS3", "STAM2", "STAT1", "STAT2", "STAT3", "TGFB1", "TLR2", "TNF", "TNFRSF12A", "TNFRSF1A", "TNFRSF1B", "TNFRSF21", "TYK2")
+
+LE.IL6.HALLMARK <- c("LIF", "IL6", "CCL7", "CCL19", "CCL2", "TNF", "CXCL9", "IL12RB1", "IL18", "IL4R", "CCL4", "IL10", "KLRD1", "FGR", "CD40", "CAPG", "CSF1", "NCR1", "CD4")
+
+sig.prots <- sort(LE.IL6.HALLMARK)
+
+top.mets <- dplyr::arrange(SPEARobj.k22$get.features(factors = 2, datasets = "metabolomics"), -abs(projection.coefficient))$Feature
+
+sig.mets <- sort(top.mets[1:20])
+# sort by pos/neg:
+sig.mets <- sig.mets[c(
+  #pos:
+  1, 2, 3, 5, 6, 17, 19, 20,
+  # neg:
+  4, 8:16, 7, 18
+)]
+
+# custom correlation matrix:
+cm <- matrix(0, nrow = length(sig.mets), ncol = length(sig.prots))
+colnames(cm) <- sig.prots
+rownames(cm) <- sig.mets
+
+for(f1 in colnames(cm)){
+  for(f2 in rownames(cm)){
+    cm[f2, f1] <- cor(SPEARobj.k22$data$train$X[,f1], SPEARobj.k22$data$train$X[,f2], method = "spearman")
+  }
+}
+
+cm.melt <- reshape2::melt(cm)
+cm.melt$freq <- 1
+cm.melt$dir <- ifelse(cm.melt$value >= 0, "red", "blue")
+# Alluvial plot:
+  
+library(ggalluvial)
+# axis1 - proteomics
+# axis 2 - metabolomics
+# y - how many (width) - can be 1
+# 
+prots.order <- rev(c("IL18", "CD4", "NCR1", "CSF1", "CAPG", "CD40", "FGR", "KLRD1", "IL10", "CCL4", "IL4R", "IL12RB1", "CXCL9", "TNF", "CCL2", "CCL19", "CCL7", "IL6", "LIF"))
+
+t <- readRDS("~/Documents/Coding/IMPACC/SPEAR/FigureGenerator/Figure6/factor2metabs.rds")
+mets.order <- t$Cell_identifier
+
+ggplot(data = cm.melt,
+       aes(axis1 = factor(Var2, levels = prots.order), 
+           axis2 = factor(Var1, levels = mets.order), 
+           y = freq)) +
+  geom_alluvium(aes(fill = dir, alpha = abs(value)), curve_type = "sine") +
+  geom_stratum() +
+  geom_text(stat = "stratum",
+            aes(label = after_stat(stratum))) +
+  scale_x_discrete(limits = c("Survey", "Response"),
+                   expand = c(0.15, 0.05)) +
+  scale_fill_manual(values = c(
+    blue = "blue",
+    red = "red"
+  )) +
+  theme_void()
+```
+
+6F) Plasmalogens
+
+```{r} 
+
+expr.df <- SPEARobj.k22$data$train$Xlist$metabolomics[,t$Cell_identifier[10:20]]
+
+# Order df by factor scores:
+fs <- SPEARobj.k22$get.factor.scores()
+fs.2 <- fs[,2]
+o <- order(fs.2)
+expr.df <- expr.df[o,]
+
+#hc = hclust(dist(t(expr.df)))
+#col.o <- hc$order
+feat.df <- SPEARobj.k22$get.features(probability.cutoff = 0, factors = 2)
+feat.df.rel <- dplyr::filter(feat.df, Feature %in% colnames(expr.df))
+feat.df.rel <- dplyr::arrange(feat.df.rel, projection.coefficient)
+feat.df.rel <- feat.df.rel[!duplicated(feat.df.rel$Feature),]
+expr.df = expr.df[,feat.df.rel$Feature,drop=FALSE]
+expr.df.melt <- reshape2::melt(expr.df)
+prots.order <- feat.df.rel$Feature
+cap <- 3
+expr.df.melt$value[which(expr.df.melt$value >= cap)] <- cap
+expr.df.melt$value[which(expr.df.melt$value <= -cap)] <- -cap
+
+g.plasmalogen.expr.mets <- ggplot(expr.df.melt) +
+  geom_tile(aes(x = Var1, y = Var2, fill = value)) +
+  scale_fill_gradient2(low = "cyan", mid = "black", high = "red") +
+  theme_classic() +
+  ylab(NULL) +
+  xlab("Samples\n(ranked by Factor2 Score)") +
+  theme(axis.text.x = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.line = element_blank(),
+        axis.title.x = element_text(size = 9),
+        legend.position = "bottom",
+        legend.title = element_text(vjust = .8)) +
+  labs(fill = "Expr.")
+
+g.plasmalogen.proj.coef <- ggplot(reshape2::melt(dplyr::select(feat.df.rel, Feature, projection.coefficient))) +
+  geom_tile(aes(x = variable, y = factor(Feature, levels = unique(Feature)), fill = value), color = "black", size = .2) +
+  xlab("Samples\n(ranked by Factor2 Score)") +
+  scale_fill_gradient2(low = "darkblue", high = "white") +
+  theme_void() +
+  theme(axis.title.x = element_text(size = 9, color = "white"), legend.title = element_text(vjust = .8), legend.position = "bottom") +
+  labs(fill = "Coef.")
+
+g.plasmalogen.expr.joint.prob<- ggplot(reshape2::melt(dplyr::select(feat.df.rel, Feature, joint.probability))) +
+  geom_tile(aes(x = variable, y = factor(Feature, levels = unique(Feature)), fill = value), color = "black", size = .2) +
+  xlab("Samples\n(ranked by F2 Score)") +
+  scale_fill_gradient2(high = "darkred") +
+  theme_void() +
+  theme(axis.title.x = element_text(size = 9, color = "white"), legend.title = element_text(vjust = .8), legend.position = "bottom") +
+  labs(fill = "Prob.")
+
+```
+
+Response
+
+```{r}
+resp.df <- data.frame(
+  id = rownames(fs)[o],
+  resp = factor(sapply(rownames(fs)[o], function(id){
+    return(which.max(SPEARobj.k22$data$train$Y[id,]))
+  }), levels = 1:4)
+)
+rownames(resp.df) <- NULL
+
+resp.df.melt <- reshape2::melt(resp.df)
+
+g.plasmalogen.expr.resp <- ggplot(resp.df.melt) +
+  geom_tile(aes(x = factor(id, levels = unique(id)), y = 1, fill = resp)) +
+  scale_fill_manual(values = unname(SPEARobj.k22$options$color.scheme$Y)) +
+  scale_y_continuous(breaks = 1, labels = c("True")) +
+  theme_classic() +
+  ylab(NULL) +
+  xlab(NULL) +
+  theme(axis.text.x = element_blank(),
+        axis.text.y = element_text(size = 10),
+        axis.ticks.x = element_blank(),
+        axis.line = element_blank(),
+        axis.title.x = element_text(size = 9),
+        legend.position = "bottom")
+```
+
+Predictions
+
+```{r}
+preds <- SPEARobj.k22$get.predictions()
+
+resp.df <- data.frame(
+  id = rownames(fs)[o],
+  resp = factor(sapply(rownames(fs)[o], function(id){
+    return(preds$class.predictions[id,] + 1)
+  }), levels = 1:4)
+)
+rownames(resp.df) <- NULL
+
+resp.df.melt <- reshape2::melt(resp.df)
+
+g.plasmalogen.expr.preds <- ggplot(resp.df.melt) +
+  geom_tile(aes(x = factor(id, levels = unique(id)), y = 1, fill = resp)) +
+  scale_fill_manual(values = unname(SPEARobj.k22$options$color.scheme$Y)) +
+  scale_y_continuous(breaks = 1, labels = c("Pred")) +
+  theme_classic() +
+  ylab(NULL) +
+  xlab(NULL) +
+  theme(axis.text.x = element_blank(),
+        axis.text.y = element_text(size = 10),
+        axis.ticks.x = element_blank(),
+        axis.line = element_blank(),
+        axis.title.x = element_text(size = 9),
+        legend.position = "bottom")
+```
+
+Factor Scores
+
+```{r}
+resp.df <- as.data.frame(fs[o,2,drop = FALSE])
+resp.df$id <- 1:nrow(resp.df)
+rownames(resp.df) <- NULL
+resp.df.melt <- reshape2::melt(resp.df, id.vars = "id")
+
+g.plasmalogen.expr.fs2 <- ggplot(resp.df.melt) +
+  geom_tile(aes(x = factor(id, levels = unique(id)), y = 1, fill = value)) +
+  viridis::scale_fill_viridis(option = "B") +
+  scale_y_continuous(breaks = 1, labels = c("Factor2")) +
+  theme_classic() +
+  ylab(NULL) +
+  xlab(NULL) +
+  theme(axis.text.x = element_blank(),
+        axis.text.y = element_text(size = 10),
+        axis.ticks.x = element_blank(),
+        axis.line = element_blank(),
+        axis.title.x = element_text(size = 10),
+        legend.position = "bottom",
+        legend.title = element_text(vjust = .8)) +
+  labs(fill = "Factor Score")
+
+```
+
+Legends
+
+```{r}
+# Extract legends
+g.plasmalogen.expr.mets.l <- cowplot::get_legend(g.plasmalogen.expr.mets)
+g.plasmalogen.expr.preds.l <- cowplot::get_legend(g.plasmalogen.expr.preds)
+g.plasmalogen.expr.fs2.l <- cowplot::get_legend(g.plasmalogen.expr.fs2)
+g.plasmalogen.expr.resp.l <- cowplot::get_legend(g.plasmalogen.expr.resp)
+g.plasmalogen.proj.coef.l <- cowplot::get_legend(g.plasmalogen.proj.coef)
+g.plasmalogen.expr.joint.prob.l <- cowplot::get_legend(g.plasmalogen.expr.joint.prob)
+
+# save w/o legends
+g.plasmalogen.expr.preds <- g.plasmalogen.expr.preds + guides(fill = "none") + theme(plot.margin = unit(c(0, 0, 0, 0), "cm"))
+g.plasmalogen.expr.resp <- g.plasmalogen.expr.resp + guides(fill = "none") + theme(plot.margin = unit(c(0, 0, 0, 0), "cm"))
+g.plasmalogen.expr.mets <- g.plasmalogen.expr.mets + guides(fill = "none") + theme(plot.margin = unit(c(0, 0, 0, 0), "cm"))
+g.plasmalogen.expr.fs2 <- g.plasmalogen.expr.fs2 + guides(fill = "none") + theme(plot.margin = unit(c(0, 0, 0, 0), "cm"))
+g.plasmalogen.proj.coef <- g.plasmalogen.proj.coef + guides(fill = "none") + theme(plot.margin = unit(c(0, 0, 0, 0), "cm"))
+g.plasmalogen.expr.joint.prob <- g.plasmalogen.expr.joint.prob + guides(fill = "none") + theme(plot.margin = unit(c(0, 0, 0, 0), "cm"))
+```
+
+Combine
+
+```{r}
+p.plasmalogen.comb.plots <- cowplot::plot_grid(g.plasmalogen.expr.resp, NULL, NULL,
+                   g.plasmalogen.expr.preds, NULL, NULL,
+                   g.plasmalogen.expr.fs2, NULL, NULL,
+                   g.plasmalogen.expr.mets, g.plasmalogen.proj.coef, g.plasmalogen.expr.joint.prob,
+                   axis = "l", align = "v", ncol=3, rel_heights = c(.05, .05, .05, 1), rel_widths = c(1, .2, .2))
+p.plasmalogen.comb.plots
+```
+
+```{r}
+cowplot::plot_grid(g.il6.expr.prots.l, g.il6.expr.proj.coef.l, g.il6.expr.joint.prob.l, g.il6.expr.fs2.l, ncol = 1)
+```
+
+
+
+
