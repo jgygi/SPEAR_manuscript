@@ -34,9 +34,9 @@ set.seed(123)
 ```{r}
 ## Making the SPEARobject (NOTE: Do not run! Just load it)
 
-prot <- read.csv(paste0(covid.data.location, "RF-Imputted-Proteomic.csv"))
-met <- read.csv(paste0(covid.data.location, "RF-Imputted-Metabolic.csv"))
-resp <- read.csv(paste0(covid.data.location, "Response.csv"))
+prot <- read.csv(paste0(covid.data.location, "Su_COVID19_RF-Imputted-Proteomic.csv"))
+met <- read.csv(paste0(covid.data.location, "Su_COVID19_RF-Imputted-Metabolic.csv"))
+resp <- read.csv(paste0(covid.data.location, "Su_COVID19_Response.csv"))
 
 prot.mat <- as.matrix(prot[2:ncol(prot)])
 met.mat <- as.matrix(met[2:ncol(met)])
@@ -80,7 +80,7 @@ met.mat.log.qn <- log(quantile.normalization(met.mat))
 ### Generate Fold-ids for CV:
 
 ```{r include = FALSE}
-clin.data <- readxl::read_excel(path = paste0(covid.data.location, "clinical.xlsx"), sheet = "S1.1 Patient Clinical Data")
+clin.data <- readxl::read_excel(path = paste0(covid.data.location, "Su_COVID19_clinical.xlsx"), sheet = "S1.1 Patient Clinical Data")
 prot.raw <- read.csv(file = "Plasma_Proteomics.csv", header = TRUE)
 met.raw <- read.csv(file = "Plasma_Metabolomic.csv", header = TRUE)
 
