@@ -81,8 +81,8 @@ met.mat.log.qn <- log(quantile.normalization(met.mat))
 
 ```{r include = FALSE}
 clin.data <- readxl::read_excel(path = paste0(covid.data.location, "Su_COVID19_clinical.xlsx"), sheet = "S1.1 Patient Clinical Data")
-prot.raw <- read.csv(file = "Plasma_Proteomics.csv", header = TRUE)
-met.raw <- read.csv(file = "Plasma_Metabolomic.csv", header = TRUE)
+prot.raw <- read.csv(file = paste0(covid.data.location, "Su_COVID19_Plasma_Proteomics.csv"), header = TRUE)
+met.raw <- read.csv(file = paste0(covid.data.location, "Su_COVID19_Plasma_Metabolomic.csv"), header = TRUE)
 
 current.rownames <- rownames(resp.mat)
 updated.rownames <- sapply(current.rownames, function(id){
