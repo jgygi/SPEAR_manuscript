@@ -32,4 +32,5 @@ All this data can also be extracted directly from that paper, but we provide the
 TCGA-BC:
 All files are made accessible from *Singh, A. et al. DIABLO: an integrative approach for identifying key molecular drivers from multi-omics assays. Bioinforma. Oxf. Engl. 35, 3055–3062 (2019)*
 
+The data files (*Singh_TCGA_TCGA.normalised.mixDIABLO.RData* and *Singh_TCGA_trainTestDatasetsNormalized.RDATA*) are too large for GitHub (200 Mb). We are deciding the best way to host them. Until then, reach out to me (jeremy.gygi@yale.edu) for access to these two files.
 
