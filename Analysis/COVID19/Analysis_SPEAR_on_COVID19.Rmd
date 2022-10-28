@@ -1,0 +1,889 @@
+---
+title: "SPEAR on COVID-19 Data"
+author: "Jeremy Gygi - Shrikant Pawar"
+output: html_notebook
+---
+
+### Libraries:
+
+```{r message = FALSE}
+library(SPEAR)
+library(ggplot2)
+library(glmnet)
+library(MOFA2)
+library(mixOmics)
+library(reticulate)
+predict <- stats::predict
+###########################################
+#     REPRODUCIBILITY NOTE FOR USER:      #
+#     CHANGE THE PYTHON PATH HERE:        #
+python_path <- "/opt/anaconda3/bin/python"#
+###########################################
+use_python(python_path, required = TRUE)
+
+# Path to save results to:
+save.path <- "~/SPEAR_COVID19/results/"
+covid.data.location <- "~/SPEAR_COVID19/data/"
+
+# Set seed for reproducible results (fold assignments):
+set.seed(123)
+```
+
+### Data Preprocessing
+
+```{r}
+## Making the SPEARobject (NOTE: Do not run! Just load it)
+
+prot <- read.csv(paste0(covid.data.location, "RF-Imputted-Proteomic.csv"))
+met <- read.csv(paste0(covid.data.location, "RF-Imputted-Metabolic.csv"))
+resp <- read.csv(paste0(covid.data.location, "Response.csv"))
+
+prot.mat <- as.matrix(prot[2:ncol(prot)])
+met.mat <- as.matrix(met[2:ncol(met)])
+
+rownames(prot.mat) <- resp$sample_id
+rownames(met.mat) <- resp$sample_id
+
+resp.mat <- matrix(sapply(1:nrow(resp), function(i){
+  if(resp$Who.Ordinal.Scale[i] == 0){
+    return(0)
+  } else if(resp$Who.Ordinal.Scale[i] < 3){
+    return(1)
+  } else if(resp$Who.Ordinal.Scale[i] < 5){
+    return(2)
+  }else if(resp$Who.Ordinal.Scale[i] < 8){
+    return(3)
+  } else{
+    return(4)
+  }
+}), ncol = 1)
+rownames(resp.mat) <- resp$sample_id
+colnames(resp.mat) <- "Who.Ordinal.Scale.Simplified"
+
+# Quantile Normalize
+quantile.normalization <- function(df){
+  df.ranked <- apply(df,2,base::rank,ties.method="min")
+  df.sorted <- data.frame(apply(df, 2, sort))
+  df.mean <- apply(df.sorted, 1, mean)
+  index_to_mean <- function(my_index, my_mean){
+    return(my_mean[my_index])
+  }
+  df.final <- apply(df.ranked, 2, index_to_mean, my_mean=df.mean)
+  rownames(df.final) <- rownames(df)
+  colnames(df.final) <- colnames(df)
+  return(df.final)
+}
+
+met.mat.log.qn <- log(quantile.normalization(met.mat))
+```
+
+### Generate Fold-ids for CV:
+
+```{r include = FALSE}
+clin.data <- readxl::read_excel(path = paste0(covid.data.location, "clinical.xlsx"), sheet = "S1.1 Patient Clinical Data")
+prot.raw <- read.csv(file = "Plasma_Proteomics.csv", header = TRUE)
+met.raw <- read.csv(file = "Plasma_Metabolomic.csv", header = TRUE)
+
+current.rownames <- rownames(resp.mat)
+updated.rownames <- sapply(current.rownames, function(id){
+  return(prot.raw$sample_id[which(prot.raw$Healthy.donor.sample.or.COVID19.sample == id)])
+})
+split.rownames <- stringr::str_split(updated.rownames, "-")
+rowname.df <- data.frame(
+  id = updated.rownames,
+  sample = sapply(split.rownames, function(x){return(x[1])}),
+  time = sapply(split.rownames, function(x){if(length(x) > 1){
+      return(x[2])
+  } else {
+      return("Healthy")
+    }
+  })
+)
+
+rowname.df$time <- sapply(rowname.df$time, function(t){
+  if(t == "AC"){
+    return("T1")
+  } else if(t == "BL"){
+    return("T2")
+  } 
+  return("Healthy")
+})
+
+rowname.df$test.id <- NA
+# Randomly assign 1:3 to healthy:
+rowname.df$test.id[which(rowname.df$time == "Healthy")] <- sample(rep(1:3, ceiling(sum(rowname.df$time == "Healthy")/3)), sum(rowname.df$time == "Healthy"))
+# Randomly assign 1:3 to covid patients:
+t <- table(rowname.df$sample[which(rowname.df$time != "Healthy")])
+covid.sample.assignments <- sample(rep(1:3, ceiling(length(t)/3)), length(t))
+names(covid.sample.assignments) <- names(t)
+rowname.df$test.id[which(rowname.df$time != "Healthy")] <- sapply(rowname.df$sample[which(rowname.df$time != "Healthy")], function(sample){
+  return(covid.sample.assignments[sample])
+})
+
+# Do fold ids, up to 10 folds:
+rowname.df$fold.id <- NA
+num.folds = 10
+for(test.id in 1:3){
+  # Healthy
+  l <- rowname.df$time == "Healthy" & rowname.df$test.id == test.id
+  N <- sum(l)
+  rowname.df$fold.id[which(l)] <- sample(rep(1:num.folds, ceiling(N/num.folds)), N)
+  # COVID-19
+  l2 <- rowname.df$time != "Healthy" & rowname.df$test.id == test.id
+  t <- table(rowname.df$sample[l2])
+  covid.sample.assignments <- sample(rep(1:num.folds, ceiling(length(t)/num.folds)), length(t))
+  names(covid.sample.assignments) <- names(t)
+  rowname.df$fold.id[l2] <- sapply(rowname.df$sample[l2], function(sample){
+    return(covid.sample.assignments[sample])
+  })
+}
+
+# Analyze distribution of samples:
+for(test.id in 1:3){
+  cat("Separation ", test.id, ":\n\n")
+  cat("Train (Healthy):\n")
+  print(table(rowname.df$fold.id[which(rowname.df$test.id != test.id & rowname.df$time == "Healthy")]))
+  cat("Train (COVID):\n")
+  print(table(rowname.df$fold.id[which(rowname.df$test.id != test.id & rowname.df$time != "Healthy")]))
+  cat("Test (Healthy):\n")
+  print(length(rowname.df$fold.id[which(rowname.df$test.id == test.id & rowname.df$time == "Healthy")]))
+  cat("Test (COVID):\n")
+  print(length(rowname.df$fold.id[which(rowname.df$test.id == test.id & rowname.df$time != "Healthy")]))
+}
+```
+
+## Nested CV:
+
+### Run SPEAR on nested CV:
+
+```{r eval=FALSE, include = FALSE}
+
+X.total <- list(proteomics = scale(prot.mat), metabolomics = scale(met.mat.log.qn))
+Y.total <- resp.mat
+Y.encoded <- matrix(0, nrow = nrow(Y.total), ncol = 4)
+spear.min.probs.te <- list()
+spear.sd.probs.te <- list()
+for(i in 1:nrow(Y.encoded)){
+  Y.encoded[i,Y.total[i,1]+1] <- 1
+}
+rownames(Y.encoded) <- rownames(Y.total)
+colnames(Y.encoded) <- c("Healthy", "Mild", "Moderate", "Severe")
+
+# Chosen Y
+Y.chosen <- Y.encoded
+
+for(test.id in 1:3){
+  
+  train.data <- list()
+  test.data <- list()
+  
+  train.ind <- which(rowname.df$test.id != test.id)
+  test.ind <- which(rowname.df$test.id == test.id)
+
+  train.data$X <- list(proteomics = X.total$proteomics[train.ind,],
+                       metabolomics = X.total$metabolomics[train.ind,])
+  train.data$Y <- Y.chosen[train.ind,]
+  
+  test.data$X <- list(proteomics = X.total$proteomics[test.ind,],
+                       metabolomics = X.total$metabolomics[test.ind,])
+  test.data$Y <- Y.chosen[test.ind,]
+  
+  for(factors.id in c(22)){
+
+    SPEARobj <- make.SPEARobject(X = train.data$X,
+                                 Y = train.data$Y,
+                                 family = "multinomial",
+                                 num_factors = factors.id,
+                                 sparsity_upper = .5)
+    
+    SPEARobj$add.data(X = test.data$X, Y = test.data$Y, name = "test")
+    
+    fold.ids <- sapply(rownames(SPEARobj$data$train$X), function(id){
+      return(rowname.df$fold.id[which(rownames(rowname.df) == id)])
+    })
+    
+    SPEARobj$run.cv.spear(fold.ids = fold.ids)
+    SPEARobj$cv.evaluate()
+    
+    SPEARobj$set.weights(method = "min")
+    spear.min.probs.te[[test.id]] <- SPEARobj$get.predictions(data = "test")$class.probabilities
+    SPEARobj$set.weights(method = "sd")
+    spear.sd.probs.te[[test.id]] <- SPEARobj$get.predictions(data = "test")$class.probabilities
+    SPEARobj$save.model(file = paste0(save.path, "SPEARCOVID_foldid_corrected_fast_multi_k", factors.id, "_testid", test.id, ".rds"))
+  }
+}
+spear.probs <- list(sd = do.call("rbind", spear.sd.probs.te), min = do.call("rbind", spear.min.probs.te))
+
+```
+
+get probabilities:
+
+```{r}
+SPEARobj1 <- readRDS(paste0(save.path, "SPEARCOVID_foldid_corrected_fast_multi_k22_testid1.rds"))
+SPEARobj2 <- readRDS(paste0(save.path, "SPEARCOVID_foldid_corrected_fast_multi_k22_testid2.rds"))
+SPEARobj3 <- readRDS(paste0(save.path, "SPEARCOVID_foldid_corrected_fast_multi_k22_testid3.rds"))
+
+SPEARobj1$set.weights(method = "min")
+preds1 <- SPEARobj1$get.predictions(data = "test")$class.probabilities
+SPEARobj2$set.weights(method = "min")
+preds2 <- SPEARobj2$get.predictions(data = "test")$class.probabilities
+SPEARobj3$set.weights(method = "min")
+preds3 <- SPEARobj3$get.predictions(data = "test")$class.probabilities
+spear.min.probs <- rbind(preds1, preds2, preds3)
+
+SPEARobj1$set.weights(method = "sd")
+preds1 <- SPEARobj1$get.predictions(data = "test")$class.probabilities
+SPEARobj2$set.weights(method = "sd")
+preds2 <- SPEARobj2$get.predictions(data = "test")$class.probabilities
+SPEARobj3$set.weights(method = "sd")
+preds3 <- SPEARobj3$get.predictions(data = "test")$class.probabilities
+spear.sd.probs <- rbind(preds1, preds2, preds3)
+
+```
+
+
+### Run MOFA+ - lasso combination on nested CV:
+
+```{r eval=FALSE, include = FALSE}
+
+X.total <- list(proteomics = scale(prot.mat), metabolomics = scale(met.mat.log.qn))
+Y.total <- resp.mat
+MOFA.results <- list()
+mofa.probs.tr <- list()
+mofa.probs.te <- list()
+for(test.id in 1:3){
+  
+  train.data <- list()
+  test.data <- list()
+  
+  train.ind <- which(rowname.df$test.id != test.id)
+  test.ind <- which(rowname.df$test.id == test.id)
+
+  train.data$X <- list(proteomics = X.total$proteomics[train.ind,],
+                       metabolomics = X.total$metabolomics[train.ind,])
+  train.data$Y <- Y.total[train.ind,]
+  
+  test.data$X <- list(proteomics = X.total$proteomics[test.ind,],
+                       metabolomics = X.total$metabolomics[test.ind,])
+  test.data$Y <- Y.total[test.ind,]
+  
+  for(factors.id in c(30)){
+    
+    # MOFA:
+    x.mofa <- list()
+    for(d in 1:length(train.data$X)){
+      x.mofa[[d]] <- t(train.data$X[[d]])
+      rownames(x.mofa[[d]]) <- paste0(c("proteomics", "metabolomics")[d], "_feat_", 1:nrow(x.mofa[[d]]))
+      rownames(x.mofa[[d]]) <- make.unique(rownames(x.mofa[[d]]))
+    }
+    MOFAobject <- MOFA2::create_mofa(x.mofa)
+    # MOFA+ specific parameters:
+    data_opts <- get_default_data_options(MOFAobject)
+    model_opts <- get_default_model_options(MOFAobject)
+    model_opts$num_factors <- factors.id
+    train_opts <- get_default_training_options(MOFAobject)
+    train_opts$seed <- 123
+    MOFAobject <- prepare_mofa(
+      object = MOFAobject,
+      data_options = data_opts,
+      model_options = model_opts,
+      training_options = train_opts
+    )
+    # Running MOFA+
+    MOFA_res <- run_mofa(MOFAobject, save_data = FALSE)
+    #if(ncol(MOFA_res@expectations$Z[[1]]) < 2){
+    #  MOFA.factors <- cbind(MOFA_res@expectations$Z[[1]], MOFA_res@expectations$Z[[1]])
+    #  colnames(MOFA.factors) <- c("Factor1", "Factor2")
+    #} else {
+      MOFA.factors <- MOFA_res@expectations$Z[[1]]
+    #}
+    MOFA.coefs = matrix(NA, ncol = ncol(MOFA.factors), nrow = ncol(do.call("cbind", train.data$X)))
+    for(k in 1:ncol(MOFA.factors)){
+      tmp =  cv.glmnet(x = do.call("cbind", train.data$X), y = MOFA.factors[,k])
+      MOFA.coefs[,k] = coef(tmp, s = "lambda.min")[-1]
+    }
+    MOFA.factors.tr = do.call("cbind", train.data$X) %*% MOFA.coefs
+    MOFA.factors.te = do.call("cbind", test.data$X) %*% MOFA.coefs
+    MOFA_lasso_res = cv.glmnet(MOFA.factors.tr, train.data$Y, family = "multinomial")
+    MOFA.preds.tr = predict(MOFA_lasso_res, MOFA.factors.tr, s = "lambda.min")
+    MOFA.preds.te = predict(MOFA_lasso_res, MOFA.factors.te, s = "lambda.min")
+
+    # Get misclassificaiton error rate and BER:
+    df <- data.frame(true = train.data$Y,
+                     pred = apply(MOFA.preds.tr[,,1], 1, which.max)-1)
+    colnames(df) <- c("true", "pred")
+    cm_o <- table(df)
+    cmlevels = sort(unique(df$true))
+    cm<-matrix(0L,nrow=length(cmlevels),ncol=length(cmlevels))
+    rownames(cm)=cmlevels
+    colnames(cm)=cmlevels
+    for (i in rownames(cm_o)){
+      for (j in colnames(cm_o)){
+        cm[i,j]=cm_o[i,j]
+      }
+    }
+    cm_wrong<-cm
+    diag(cm_wrong)<-0
+    cm_wrong_sum<-apply(cm_wrong,1,sum)
+    cm_sum<-apply(cm,1,sum)
+    misclass_error <- round(sum(cm_wrong)/sum(cm),2)
+    misclass_error_ind <- cm_wrong_sum/cm_sum
+    misclass_error_ind <- na.omit(misclass_error_ind)
+    ber <-round(sum(misclass_error_ind)/length(misclass_error_ind),2)
+    MOFA.error.tr <- misclass_error
+    MOFA.berror.tr <- ber
+    
+    # Get misclassificaiton error rate and BER:
+    df <- data.frame(true = test.data$Y,
+                     pred = apply(MOFA.preds.te[,,1], 1, which.max)-1)
+    colnames(df) <- c("true", "pred")
+    cm_o <- table(df)
+    cmlevels = sort(unique(df$true))
+    cm<-matrix(0L,nrow=length(cmlevels),ncol=length(cmlevels))
+    rownames(cm)=cmlevels
+    colnames(cm)=cmlevels
+    for (i in rownames(cm_o)){
+      for (j in colnames(cm_o)){
+        cm[i,j]=cm_o[i,j]
+      }
+    }
+    cm_wrong<-cm
+    diag(cm_wrong)<-0
+    cm_wrong_sum<-apply(cm_wrong,1,sum)
+    cm_sum<-apply(cm,1,sum)
+    misclass_error <- round(sum(cm_wrong)/sum(cm),2)
+    misclass_error_ind <- cm_wrong_sum/cm_sum
+    misclass_error_ind <- na.omit(misclass_error_ind)
+    ber <-round(sum(misclass_error_ind)/length(misclass_error_ind),2)
+    MOFA.error.te <- misclass_error
+    MOFA.berror.te <- ber
+    
+    
+    
+    MOFA.results[[paste0("k", factors.id, "_id", test.id)]] <- list(train.error = MOFA.error.tr,
+                                                     train.berror = MOFA.berror.tr,
+                                                     test.error = MOFA.error.te,
+                                                     test.berror = MOFA.berror.te,
+                                                     preds.te = df)
+    
+    mofa.probs.tr[[test.id]] <- MOFA.preds.tr[,,1]
+    mofa.probs.te[[test.id]] <- MOFA.preds.te[,,1]
+    
+  }
+}
+mofa.probs <- list(train = do.call("rbind", mofa.probs.tr), test = do.call("rbind", mofa.probs.te))
+```
+
+### Run DIABLO on nested CV:
+
+```{r eval=FALSE, include = FALSE}
+
+get.DIABLO.probs <- function(res){
+  # res = samples x classes x components
+  res.comp <- res[,,dim(res)[3]]
+  return(res.comp)
+}
+
+diablo.berror.te <- list()
+diablo.error.te <- list()
+diablo.error.tr <- list()
+diablo.berror.tr <- list()
+diablo.preds.te <- list()
+diablo.probs.tr <- list()
+diablo.probs.te <- list()
+
+X.total <- list(proteomics = scale(prot.mat), metabolomics = scale(met.mat.log.qn))
+Y.total <- resp.mat
+Y.encoded <- matrix(0, nrow = nrow(Y.total), ncol = 4)
+for(i in 1:nrow(Y.encoded)){
+  Y.encoded[i,Y.total[i,1]+1] <- 1
+}
+rownames(Y.encoded) <- rownames(Y.total)
+colnames(Y.encoded) <- c("Healthy", "Mild", "Moderate", "Severe")
+
+# Chosen Y
+Y.chosen <- as.data.frame(Y.total)
+Y.chosen$Who.Ordinal.Scale.Simplified <- as.character(Y.chosen$Who.Ordinal.Scale.Simplified)
+
+for(test.id in 1:3){
+  
+  train.data <- list()
+  test.data <- list()
+  
+  train.ind <- which(rowname.df$test.id != test.id)
+  test.ind <- which(rowname.df$test.id == test.id)
+
+  train.data$X <- list(proteomics = X.total$proteomics[train.ind,],
+                       metabolomics = X.total$metabolomics[train.ind,])
+  train.data$Y <- Y.chosen[train.ind,]
+  
+  test.data$X <- list(proteomics = X.total$proteomics[test.ind,],
+                       metabolomics = X.total$metabolomics[test.ind,])
+  test.data$Y <- Y.chosen[test.ind,]
+  
+  # Test for num.components, use 4 based on perf.diablo
+  #sgccda.res = block.splsda(X = train.data$X, Y = train.data$Y, ncomp = 5)
+  #set.seed(123)
+  #perf.diablo = perf(sgccda.res, validation = 'Mfold', folds = 10, nrepeat = 10)
+  #plot(perf.diablo) 
+  #ncomp = perf.diablo$choice.ncomp$WeightedVote["Overall.BER", "centroids.dist"]
+  ncomp = 4 # after running above, best choice was 4. Uncomment to rerun.
+
+  # NOTE:: Below was run first to tune the DIABLO parameters. Results have been hardcoded into list.keepX:
+  # Tune DIABLO:
+  #test.keepX = list (proteomics = c(5:9, seq(10, 18, 2), seq(20,30,5)),
+  #                 metabolomics = c(5:9, seq(10, 18, 2), seq(20,30,5)))
+
+  #tune.diablo = tune.block.splsda(X = train.data$X, Y = train.data$Y, ncomp = ncomp,
+  #                              test.keepX = test.keepX, design = design,
+  #                              validation = 'Mfold', folds = 10, nrepeat = 1,
+  #                              cpus = 2, dist = "centroids.dist")
+  
+  list.keepX <- list(proteomics = c(6, 10, 5, 12),
+                     metabolomics = c(7, 5, 5, 18))
+  
+  design = matrix(0, nrow = 3, ncol = 3)
+  design[,3] <- 1
+  design[3,] <- 1
+  diag(design) = 0
+  diablo.res = block.splsda(X = train.data$X, Y = train.data$Y, ncomp = ncomp, 
+                          keepX = list.keepX, design = design)
+  
+  # Testing:
+  predict.diablo.tr = predict(diablo.res, newdata = train.data$X)
+  predict.diablo.te = predict(diablo.res, newdata = test.data$X)
+  
+  
+  # IN PROGRESS: AUROC
+  predict.diablo.probs.tr <- get.DIABLO.probs(predict.diablo.tr$WeightedPredict)
+  predict.diablo.probs.te <- get.DIABLO.probs(predict.diablo.te$WeightedPredict)
+  diablo.probs.tr[[test.id]] <- predict.diablo.probs.tr
+  diablo.probs.te[[test.id]] <- predict.diablo.probs.te
+  
+
+  df <- data.frame(true = train.data$Y,
+                   pred = predict.diablo.tr$WeightedVote$centroids.dist[,ncomp])
+  colnames(df) <- c("true", "pred")
+  cm_o <- table(df)
+  cmlevels = sort(unique(df$true))
+  cm<-matrix(0L,nrow=length(cmlevels),ncol=length(cmlevels))
+  rownames(cm)=cmlevels
+  colnames(cm)=cmlevels
+  for (i in rownames(cm_o)){
+    for (j in colnames(cm_o)){
+      cm[i,j]=cm_o[i,j]
+    }
+  }
+  cm_wrong<-cm
+  diag(cm_wrong)<-0
+  cm_wrong_sum<-apply(cm_wrong,1,sum)
+  cm_sum<-apply(cm,1,sum)
+  misclass_error <- round(sum(cm_wrong)/sum(cm),2)
+  misclass_error_ind <- cm_wrong_sum/cm_sum
+  misclass_error_ind <- na.omit(misclass_error_ind)
+  ber <-round(sum(misclass_error_ind)/length(misclass_error_ind),2)
+  diablo.error.tr[[test.id]] <- misclass_error
+  diablo.berror.tr[[test.id]] <- ber
+  
+  df <- data.frame(true = test.data$Y,
+                   pred = predict.diablo.te$WeightedVote$centroids.dist[,ncomp])
+  colnames(df) <- c("true", "pred")
+  cm_o <- table(df)
+  cmlevels = sort(unique(df$true))
+  cm<-matrix(0L,nrow=length(cmlevels),ncol=length(cmlevels))
+  rownames(cm)=cmlevels
+  colnames(cm)=cmlevels
+  for (i in rownames(cm_o)){
+    for (j in colnames(cm_o)){
+      cm[i,j]=cm_o[i,j]
+    }
+  }
+  cm_wrong<-cm
+  diag(cm_wrong)<-0
+  cm_wrong_sum<-apply(cm_wrong,1,sum)
+  cm_sum<-apply(cm,1,sum)
+  misclass_error <- round(sum(cm_wrong)/sum(cm),2)
+  misclass_error_ind <- cm_wrong_sum/cm_sum
+  misclass_error_ind <- na.omit(misclass_error_ind)
+  ber <-round(sum(misclass_error_ind)/length(misclass_error_ind),2)
+  diablo.error.te[[test.id]] <- misclass_error
+  diablo.berror.te[[test.id]] <- ber
+  diablo.preds.te[[test.id]] <- df
+}
+diablo.results <- data.frame(
+  tr.unbalanced = do.call("c", diablo.error.tr),
+  tr.balanced = do.call("c", diablo.berror.tr),
+  te.unbalanced = do.call("c", diablo.error.te),
+  te.balanced = do.call("c", diablo.berror.te)
+)
+
+diablo.probs <- list(train = do.call("rbind", diablo.probs.tr), test = do.call("rbind", diablo.probs.te))
+```
+
+### Run lasso on nested CV:
+
+```{r eval=FALSE, include = FALSE}
+
+X.total <- list(proteomics = scale(prot.mat), metabolomics = scale(met.mat.log.qn))
+Y.total <- resp.mat
+lasso.probs.tr <- list()
+lasso.probs.te <- list()
+lasso.results <- list()
+for(test.id in 1:3){
+  
+  train.data <- list()
+  test.data <- list()
+  
+  train.ind <- which(rowname.df$test.id != test.id)
+  test.ind <- which(rowname.df$test.id == test.id)
+
+  train.data$X <- list(proteomics = X.total$proteomics[train.ind,],
+                       metabolomics = X.total$metabolomics[train.ind,])
+  train.data$Y <- Y.total[train.ind,]
+  
+  test.data$X <- list(proteomics = X.total$proteomics[test.ind,],
+                       metabolomics = X.total$metabolomics[test.ind,])
+  test.data$Y <- Y.total[test.ind,]
+  
+  fold.ids <- sapply(rownames(train.data$X$proteomics), function(id){
+      return(rowname.df$fold.id[which(rownames(rowname.df) == id)])
+    })
+  
+  lasso_fit = cv.glmnet(x = do.call("cbind", train.data$X), y = train.data$Y, foldid = fold.ids, family = "multinomial")
+  lasso.preds.tr = predict(lasso_fit, do.call("cbind", train.data$X), s = "lambda.min")
+  lasso.preds.te = predict(lasso_fit, do.call("cbind", test.data$X), s = "lambda.min")
+  
+  
+  # Get misclassificaiton error rate and BER:
+  df <- data.frame(true = train.data$Y,
+                   pred = apply(lasso.preds.tr[,,1], 1, which.max)-1)
+  colnames(df) <- c("true", "pred")
+  cm_o <- table(df)
+  cmlevels = sort(unique(df$true))
+  cm<-matrix(0L,nrow=length(cmlevels),ncol=length(cmlevels))
+  rownames(cm)=cmlevels
+  colnames(cm)=cmlevels
+  for (i in rownames(cm_o)){
+    for (j in colnames(cm_o)){
+      cm[i,j]=cm_o[i,j]
+    }
+  }
+  cm_wrong<-cm
+  diag(cm_wrong)<-0
+  cm_wrong_sum<-apply(cm_wrong,1,sum)
+  cm_sum<-apply(cm,1,sum)
+  misclass_error <- round(sum(cm_wrong)/sum(cm),2)
+  misclass_error_ind <- cm_wrong_sum/cm_sum
+  misclass_error_ind <- na.omit(misclass_error_ind)
+  ber <-round(sum(misclass_error_ind)/length(misclass_error_ind),2)
+  lasso.error.tr <- misclass_error
+  lasso.berror.tr <- ber
+  
+  # Get misclassificaiton error rate and BER:
+  df <- data.frame(true = test.data$Y,
+                   pred = apply(lasso.preds.te[,,1], 1, which.max)-1)
+  colnames(df) <- c("true", "pred")
+  cm_o <- table(df)
+  cmlevels = sort(unique(df$true))
+  cm<-matrix(0L,nrow=length(cmlevels),ncol=length(cmlevels))
+  rownames(cm)=cmlevels
+  colnames(cm)=cmlevels
+  for (i in rownames(cm_o)){
+    for (j in colnames(cm_o)){
+      cm[i,j]=cm_o[i,j]
+    }
+  }
+  cm_wrong<-cm
+  diag(cm_wrong)<-0
+  cm_wrong_sum<-apply(cm_wrong,1,sum)
+  cm_sum<-apply(cm,1,sum)
+  misclass_error <- round(sum(cm_wrong)/sum(cm),2)
+  misclass_error_ind <- cm_wrong_sum/cm_sum
+  misclass_error_ind <- na.omit(misclass_error_ind)
+  ber <-round(sum(misclass_error_ind)/length(misclass_error_ind),2)
+  lasso.error.te <- misclass_error
+  lasso.berror.te <- ber
+  
+  
+  
+  lasso.results[[test.id]] <- list(train.error = lasso.error.tr,
+                                   train.berror = lasso.berror.tr,
+                                   test.error = lasso.error.te,
+                                   test.berror = lasso.berror.te,
+                                   preds.te = df)
+  
+  lasso.probs.tr[[test.id]] <- lasso.preds.tr[,,1]
+  lasso.probs.te[[test.id]] <- lasso.preds.te[,,1]
+}
+lasso.probs <- list(train = do.call("rbind", lasso.probs.tr), test = do.call("rbind", lasso.probs.te))
+```
+
+Save for ROC:
+
+```{r}
+saveRDS(list(lasso.probs = lasso.probs, mofa.probs = mofa.probs, spear.sd.probs = spear.sd.probs, spear.min.probs = spear.min.probs, diablo.probs = diablo.probs), paste0(save.path, "COVID19_roc_res.rds"))
+```
+
+
+## All data:
+
+### Run SPEAR on all data
+
+```{r eval=FALSE, include = FALSE}
+
+X.total <- list(proteomics = scale(prot.mat), metabolomics = scale(met.mat.log.qn))
+Y.total <- resp.mat
+Y.encoded <- matrix(0, nrow = nrow(Y.total), ncol = 4)
+for(i in 1:nrow(Y.encoded)){
+  Y.encoded[i,Y.total[i,1]+1] <- 1
+}
+rownames(Y.encoded) <- rownames(Y.total)
+colnames(Y.encoded) <- c("Healthy", "Mild", "Moderate", "Severe")
+
+# Chosen Y
+Y.chosen <- Y.encoded
+
+train.data <- list()
+
+train.data$X <- list(proteomics = X.total$proteomics,
+                     metabolomics = X.total$metabolomics)
+train.data$Y <- Y.chosen
+
+for(factors.id in c(22)){
+
+  SPEARobj <- make.SPEARobject(X = train.data$X,
+                               Y = train.data$Y,
+                               family = "multinomial",
+                               num_factors = factors.id,
+                               sparsity_upper = .5)
+  
+  fold.ids <- sapply(rownames(SPEARobj$data$train$X), function(id){
+    return(rowname.df$fold.id[which(rownames(rowname.df) == id)])
+  })
+  
+  SPEARobj$run.cv.spear(fold.ids = fold.ids)
+  SPEARobj$cv.evaluate()
+  SPEARobj$save.model(file = paste0(save.path, "SPEARCOVID_all_k", factors.id, ".rds"))
+}
+
+```
+
+### Run MOFA+ on all data (for 5 factors and 20 factors):
+
+```{r eval=FALSE, include = FALSE}
+
+X.total <- list(proteomics = scale(prot.mat), metabolomics = scale(met.mat.log.qn))
+Y.total <- resp.mat
+Y.encoded <- matrix(0, nrow = nrow(Y.total), ncol = 4)
+for(i in 1:nrow(Y.encoded)){
+  Y.encoded[i,Y.total[i,1]+1] <- 1
+}
+rownames(Y.encoded) <- rownames(Y.total)
+colnames(Y.encoded) <- c("Healthy", "Mild", "Moderate", "Severe")
+
+# Chosen Y
+Y.chosen <- Y.encoded
+
+train.data <- list()
+
+train.data$X <- list(proteomics = X.total$proteomics,
+                     metabolomics = X.total$metabolomics)
+train.data$Y <- Y.chosen
+
+for(factors.id in c(20)){
+
+  # MOFA:
+    x.mofa <- list()
+    for(d in 1:length(train.data$X)){
+      x.mofa[[d]] <- t(train.data$X[[d]])
+    }
+    MOFAobject <- MOFA2::create_mofa(x.mofa)
+    # MOFA+ specific parameters:
+    data_opts <- get_default_data_options(MOFAobject)
+    model_opts <- get_default_model_options(MOFAobject)
+    model_opts$num_factors <- factors.id
+    train_opts <- get_default_training_options(MOFAobject)
+    train_opts$seed <- 123
+    MOFAobject <- prepare_mofa(
+      object = MOFAobject,
+      data_options = data_opts,
+      model_options = model_opts,
+      training_options = train_opts
+    )
+    # Running MOFA+
+    MOFA_res <- run_mofa(MOFAobject, save_data = FALSE)
+}
+saveRDS(MOFA_res, paste0(save.path, "MOFA_all_res_20factors.rds"))
+```
+
+### Generate Table for Results:
+
+```{r message=FALSE}
+# Table of errors:
+file.names <- list.files(pattern = "multi")
+file.names <- file.names[grepl(".rds", file.names)]
+model.list <- list()
+model.res <- list()
+pred.list <- list()
+for(file.name in file.names){
+  str.spl <- stringr::str_split(file.name, "_")[[1]]
+  k <- as.numeric(gsub("k", "", str.spl[6]))
+  if(is.null(pred.list[[as.character(k)]])){
+    pred.list[[as.character(k)]] <- list(
+      min = list(),
+      sd = list()
+    )
+  }
+  id <- as.numeric(gsub("testid", "", gsub(".rds", "", str.spl[7])))
+  model <- readRDS(file.name)
+  
+  # Add idxs:
+  cv.res <- model$get.cv.loss()
+  min.idx <- cv.res$min$widx
+  sd.idx <- cv.res$sd$widx
+  van.idx <- cv.res$vanilla$widx
+  min.cvm <- cv.res$min$cvm
+  sd.cvm <- cv.res$sd$cvm
+  van.cvm <- cv.res$vanilla$cvm
+  
+  # Add test accuracy:
+  # min
+  model$set.weights(w.idx = min.idx)
+  miss.train <- model$get.misclassification(cv = FALSE)
+  miss.cv <- model$get.misclassification()
+  miss.test <- model$get.misclassification(data = "test")
+  min.tr.miscl <- miss.train$misclass_error
+  min.tr.bl.miscl <- miss.train$balanced_misclass_error
+  min.cv.miscl <- miss.cv$misclass_error
+  min.cv.bl.miscl <- miss.cv$balanced_misclass_error
+  min.te.miscl <- miss.test$misclass_error
+  min.te.bl.miscl <- miss.test$balanced_misclass_error
+  pred.list[[as.character(k)]]$min[[id]] <- model$get.predictions(data = "test")$class.predictions
+  # sd
+  model$set.weights(w.idx = sd.idx)
+  miss.train <- model$get.misclassification(cv = FALSE)
+  miss.cv <- model$get.misclassification()
+  miss.test <- model$get.misclassification(data = "test")
+  sd.tr.miscl <- miss.train$misclass_error
+  sd.tr.bl.miscl <- miss.train$balanced_misclass_error
+  sd.cv.miscl <- miss.cv$misclass_error
+  sd.cv.bl.miscl <- miss.cv$balanced_misclass_error
+  sd.te.miscl <- miss.test$misclass_error
+  sd.te.bl.miscl <- miss.test$balanced_misclass_error
+  pred.list[[as.character(k)]]$sd[[id]] <- model$get.predictions(data = "test")$class.predictions
+  
+  model.res[[paste0("k", k, "_id", id)]] <- c(k, id, min.idx, min.cvm, sd.idx, sd.cvm, van.idx, van.cvm,
+                                              min.tr.miscl, min.tr.bl.miscl, min.cv.miscl, min.cv.bl.miscl, min.te.miscl, min.te.bl.miscl,
+                                              sd.tr.miscl, sd.tr.bl.miscl, sd.cv.miscl, sd.cv.bl.miscl, sd.te.miscl, sd.te.bl.miscl)
+  
+  model.list[[paste0("k", k, "_id", id)]] <- model
+}
+tab <- as.data.frame(do.call("rbind", model.res), row.names = FALSE)
+colnames(tab) <- c("num_factors", "test.id", "min.idx", "min.cvm", "sd.idx", "sd.cvm", "van.idx", "van.cvm",
+                   "min.misclass.train", "min.bmisclass.train", "min.misclass.cv", "min.bmisclass.cv", "min.misclass.test", "min.bmisclass.test",
+                   "sd.misclass.train", "sd.bmisclass.train", "sd.misclass.cv", "sd.bmisclass.cv", "sd.misclass.test", "sd.bmisclass.test")
+write.csv(tab, file = paste0(save.path, "COVID_misclassification_multinomial_results.csv"))
+```
+
+### Get errors:
+
+```{r}
+res <- readRDS("~/Documents/Coding/IMPACC/SPEAR/COVID19/COVID19_roc_res.rds")
+total.results <- list()
+# Function for prediction errors: Needs to have 2 columns, 'pred' and 'true'
+get_errors <- function(df){
+  cm_o <- table(df)
+  cmlevels = sort(unique(df$true))
+  cm<-matrix(0L,nrow=length(cmlevels),ncol=length(cmlevels))
+  rownames(cm)=cmlevels
+  colnames(cm)=cmlevels
+  
+  for (i in rownames(cm_o)){
+    for (j in colnames(cm_o)){
+      cm[i,j]=cm_o[i,j]
+    }
+  }
+  
+  cm_wrong<-cm
+  diag(cm_wrong)<-0
+  cm_wrong_sum<-apply(cm_wrong,1,sum)
+  cm_sum<-apply(cm,1,sum)
+  misclass_error <- round(sum(cm_wrong)/sum(cm),2)
+  misclass_error_ind <- cm_wrong_sum/cm_sum
+  misclass_error_ind <- na.omit(misclass_error_ind)
+  ber <-round(sum(misclass_error_ind)/length(misclass_error_ind),2)
+  
+  misclass_error_ind<-round(misclass_error_ind,2)
+  
+  cm <- as.table(cm)
+  names(dimnames(cm)) <- c("True", "Pred")
+  
+  results <- list('confusion_mat' = cm,
+                     'misclass_error' = misclass_error,
+                     'misclass_error_ind' = misclass_error_ind,
+                     'balanced_misclass_error' = ber)
+  return(results)
+}
+```
+
+All models:
+
+```{r}
+# SPEAR:
+tmp <- as.data.frame(apply(res$spear.min.probs, 1, which.max)-1)
+colnames(tmp) <- c("pred")
+tmp$true <- sapply(rownames(tmp), function(r){return(resp.mat[r,])})
+total.results[["SPEARmin"]] <- get_errors(tmp)
+tmp <- as.data.frame(apply(res$spear.sd.probs, 1, which.max)-1)
+colnames(tmp) <- c("pred")
+tmp$true <- sapply(rownames(tmp), function(r){return(resp.mat[r,])})
+total.results[["SPEARsd"]] <- get_errors(tmp)
+
+# MOFA:
+tmp <- as.data.frame(apply(res$mofa.probs$test, 1, which.max)-1)
+colnames(tmp) <- c("pred")
+tmp$true <- sapply(rownames(tmp), function(r){return(resp.mat[r,])})
+total.results[["MOFA"]] <- get_errors(tmp)
+
+# Lasso:
+tmp <- as.data.frame(apply(res$lasso.probs$test, 1, which.max)-1)
+colnames(tmp) <- c("pred")
+tmp$true <- sapply(rownames(tmp), function(r){return(resp.mat[r,])})
+total.results[["Lasso"]] <- get_errors(tmp)
+
+# DIABLO:
+tmp <- as.data.frame(apply(res$diablo.probs$test, 1, which.max)-1)
+colnames(tmp) <- c("pred")
+tmp$true <- sapply(rownames(tmp), function(r){return(resp.mat[r,])})
+total.results[["DIABLO"]] <- get_errors(tmp)
+
+## Save all results:
+saveRDS(total.results, paste0(save.path, "COMBINED_ERRORS_COVID19.rds"))
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
