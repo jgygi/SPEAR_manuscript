@@ -2,6 +2,7 @@ Files/instructions on how to access all data used in SPEAR manuscript.
 
 COVID-19:
 All files are made accessible from *Su, Y. et al. Multi-Omics Resolves a Sharp Disease-State Shift between Mild and Moderate COVID-19. Cell 183, 1479-1495.e20 (2020)*
+All this data can also be extracted directly from that paper, but we provide the computable matrices that we used in our analyses.
 
 + Su_COVID19_Plasma_Proteomics.csv
 
@@ -26,3 +27,9 @@ All files are made accessible from *Su, Y. et al. Multi-Omics Resolves a Sharp D
 + Su_COVID19_clinical.xlsx
 
   + Clinical data for samples
+
+
+TCGA-BC:
+All files are made accessible from *Singh, A. et al. DIABLO: an integrative approach for identifying key molecular drivers from multi-omics assays. Bioinforma. Oxf. Engl. 35, 3055–3062 (2019)*
+
+
